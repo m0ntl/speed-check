@@ -8,6 +8,7 @@
 
 #include "interactive.h"
 #include "client.h"
+#include "server.h"
 #include "icmp.h"
 #include "spdchk.h"
 
@@ -31,6 +32,7 @@
 typedef enum {
     STATE_MAIN_MENU,
     STATE_RUNNING_TEST,
+    STATE_RUNNING_SERVER,
     STATE_VIEW_RESULTS,
     STATE_VIEW_HISTORY,
     STATE_SETTINGS,
@@ -207,11 +209,36 @@ static int read_int_field(const char *label, int min_val, int max_val,
     return val;
 }
 
+/*
+ * read_str_field — temporarily restore canonical mode, prompt for a
+ * string, and store it in buf.  Blank input clears the field (allows
+ * the user to explicitly set an empty value, e.g. to reset Output File
+ * to stdout).  Enter with a space to keep the current value.
+ */
+static void read_str_field(const char *label, char *buf, size_t len)
+{
+    restore_terminal_mode();
+    printf("\n  %s [current: %s] (blank=clear): ",
+           label, buf[0] ? buf : "<empty>");
+    fflush(stdout);
+
+    char line[256];
+    if (fgets(line, (int)sizeof(line), stdin)) {
+        /* Strip trailing newline */
+        size_t l = strlen(line);
+        if (l > 0 && line[l - 1] == '\n') {
+            line[--l] = '\0';
+        }
+        snprintf(buf, len, "%s", line);
+    }
+
+    setup_terminal_raw_mode();
+}                                               */
 /* ================================================================== */
-/* TUI rendering helpers                                               */
-/* ================================================================== */
-#define MENU_ITEMS     5
-#define SETTINGS_ITEMS 4
+#define MENU_ITEMS_CLIENT     5
+#define MENU_ITEMS_SERVER     3
+#define CLIENT_SETTINGS_ITEMS 11
+#define SERVER_SETTINGS_ITEMS 4
 #define UI_WRAP(x, n)  (((x) % (n) + (n)) % (n))
 
 static void render_item(int idx, int sel, const char *label, const char *extra)
@@ -228,28 +255,40 @@ static void render_item(int idx, int sel, const char *label, const char *extra)
 /* ------------------------------------------------------------------ */
 /* Main menu                                                           */
 /* ------------------------------------------------------------------ */
-static void render_main_menu(int sel, int streams, int duration,
-                              int ping_count, const char *server_str)
+static void render_main_menu(const AppCtx *ctx)
 {
     char extra[48];
+    int  sel = ctx->sel;
 
     printf(A_CLEAR);
     printf(A_BOLD SEP_LINE A_RESET);
     printf(A_BOLD "  spdchk %s — Interactive Mode\n" A_RESET, SPDCHK_VERSION);
-    printf("  Server: " A_CYAN "%s" A_RESET "\n", server_str);
+    printf("  Mode:   " A_CYAN "%s" A_RESET "\n",
+           ctx->mode == 0 ? "Client" : "Server");
+    if (ctx->mode == 0)
+        printf("  Server: " A_CYAN "%s" A_RESET "\n", ctx->server_str);
     printf(THIN_LINE);
 
-    snprintf(extra, sizeof(extra), "[pings: %d]", ping_count);
-    render_item(0, sel, "Run Reachability (ICMP)", extra);
+    if (ctx->mode == 0) {
+        snprintf(extra, sizeof(extra), "[pings: %d]", ctx->ping_count);
+        render_item(0, sel, "Run Reachability (ICMP)", extra);
 
-    snprintf(extra, sizeof(extra), "[streams: %d, %ds]", streams, duration);
-    render_item(1, sel, "Run Bandwidth (TCP)", extra);
+        snprintf(extra, sizeof(extra), "[streams: %d, %ds]",
+                 ctx->streams, ctx->duration);
+        render_item(1, sel, "Run Bandwidth (TCP)", extra);
 
-    snprintf(extra, sizeof(extra), "[%d test(s)]", test_count);
-    render_item(2, sel, "View Session History", extra);
+        snprintf(extra, sizeof(extra), "[%d test(s)]", test_count);
+        render_item(2, sel, "View Session History", extra);
 
-    render_item(3, sel, "Change Parameters", "");
-    render_item(4, sel, "Exit", "");
+        render_item(3, sel, "Settings", "");
+        render_item(4, sel, "Exit", "");
+    } else {
+        snprintf(extra, sizeof(extra), "[port: %d]", ctx->port);
+        render_item(0, sel, "Start Server", extra);
+
+        render_item(1, sel, "Settings", "");
+        render_item(2, sel, "Exit", "");
+    }
 
     printf(THIN_LINE);
     printf(A_DIM "  \xe2\x86\x91/\xe2\x86\x93 navigate   ENTER select   Q quit\n"
@@ -260,25 +299,56 @@ static void render_main_menu(int sel, int streams, int duration,
 /* ------------------------------------------------------------------ */
 /* Settings                                                            */
 /* ------------------------------------------------------------------ */
-static void render_settings(int sel, int streams, int duration, int ping_count)
+static void render_settings(const AppCtx *ctx)
 {
-    char extra[24];
+    char extra[64];
+    int  sel = ctx->sel;
 
     printf(A_CLEAR);
     printf(A_BOLD SEP_LINE A_RESET);
-    printf(A_BOLD "  Change Parameters\n" A_RESET);
+    printf(A_BOLD "  Settings\n" A_RESET);
     printf(THIN_LINE);
 
-    snprintf(extra, sizeof(extra), "(current: %d)", streams);
-    render_item(0, sel, "TCP Streams", extra);
-
-    snprintf(extra, sizeof(extra), "(current: %d s)", duration);
-    render_item(1, sel, "TCP Duration", extra);
-
-    snprintf(extra, sizeof(extra), "(current: %d)", ping_count);
-    render_item(2, sel, "ICMP Ping Count", extra);
-
-    render_item(3, sel, "Back", "");
+    if (ctx->mode == 0) {
+        /* Client settings */
+        render_item(0, sel, "Mode",
+                    "[Client \xe2\x80\x94 ENTER to switch to Server]");
+        snprintf(extra, sizeof(extra), "(current: %s)",
+                 ctx->target_ip_buf[0] ? ctx->target_ip_buf : "<not set>");
+        render_item(1, sel, "Target IP", extra);
+        snprintf(extra, sizeof(extra), "(current: %d)", ctx->port);
+        render_item(2, sel, "Port", extra);
+        snprintf(extra, sizeof(extra), "(current: %d)", ctx->ping_count);
+        render_item(3, sel, "ICMP Ping Count", extra);
+        snprintf(extra, sizeof(extra), "(current: %d s)", ctx->duration);
+        render_item(4, sel, "TCP Duration", extra);
+        snprintf(extra, sizeof(extra), "(current: %d)", ctx->streams);
+        render_item(5, sel, "TCP Streams", extra);
+        snprintf(extra, sizeof(extra), "(current: %s)",
+                 ctx->dss_mode ? "On" : "Off");
+        render_item(6, sel, "DSS Mode", extra);
+        snprintf(extra, sizeof(extra), "(current: %d ms)", ctx->dss_window_ms);
+        render_item(7, sel, "DSS Window", extra);
+        snprintf(extra, sizeof(extra), "(current: %s)",
+                 ctx->json_output ? "On" : "Off");
+        render_item(8, sel, "JSON Output", extra);
+        snprintf(extra, sizeof(extra), "(current: %s)",
+                 ctx->output_path[0] ? ctx->output_path : "<stdout>");
+        render_item(9, sel, "Output File", extra);
+        render_item(10, sel, "Back", "");
+    } else {
+        /* Server settings */
+        render_item(0, sel, "Mode",
+                    "[Server \xe2\x80\x94 ENTER to switch to Client]");
+        snprintf(extra, sizeof(extra), "(current: %d)", ctx->port);
+        render_item(1, sel, "Port", extra);
+        if (ctx->max_dur > 0)
+            snprintf(extra, sizeof(extra), "(current: %d s)", ctx->max_dur);
+        else
+            snprintf(extra, sizeof(extra), "(current: unlimited)");
+        render_item(2, sel, "Max Duration", extra);
+        render_item(3, sel, "Back", "");
+    }
 
     printf(THIN_LINE);
     printf(A_DIM "  \xe2\x86\x91/\xe2\x86\x93 navigate   ENTER edit/select   ESC back\n"
@@ -297,6 +367,25 @@ static void render_running(const char *type, const char *target)
     printf(THIN_LINE);
     printf("  Target:  " A_CYAN "%s" A_RESET "\n", target);
     printf("  Status:  Please wait...\n");
+    printf(THIN_LINE);
+    fflush(stdout);
+}
+
+/* ------------------------------------------------------------------ */
+/* Server running indicator                                            */
+/* ------------------------------------------------------------------ */
+static void render_running_server(int port, int max_dur)
+{
+    printf(A_CLEAR);
+    printf(A_BOLD SEP_LINE A_RESET);
+    printf(A_BOLD "  Server Mode\n" A_RESET);
+    printf(THIN_LINE);
+    printf("  Listening on port " A_CYAN "%d" A_RESET "\n", port);
+    if (max_dur > 0)
+        printf("  Max per-test duration: " A_BOLD "%d s\n" A_RESET, max_dur);
+    else
+        printf("  Max per-test duration: " A_DIM "unlimited\n" A_RESET);
+    printf("  Status:  Running... (Ctrl+C to stop and exit)\n");
     printf(THIN_LINE);
     fflush(stdout);
 }
@@ -475,11 +564,25 @@ static void render_history(void)
 /* ================================================================== */
 typedef struct {
     AppState state;
-    int      sel;            /* cursor position in the active menu  */
-    int      streams;
-    int      duration;
+    int      sel;                /* cursor position in the active menu  */
+    int      mode;               /* 0 = client, 1 = server              */
+    /* client params */
+    char     target_ip_buf[64];
     int      ping_count;
-    TestType test_type;      /* test queued for STATE_RUNNING_TEST  */
+    int      duration;
+    int      streams;
+    int      dss_mode;
+    int      dss_window_ms;
+    int      json_output;
+    char     output_path[256];
+    int      version_checked;    /* 0 = handshake needed before next TCP run */
+    /* server params */
+    int      port;
+    int      max_dur;
+    /* display */
+    char     server_str[64];
+    /* test state */
+    TestType test_type;          /* test queued for STATE_RUNNING_TEST  */
     /* last ICMP result */
     struct icmp_stats        last_icmp;
     int                      last_icmp_rc;
@@ -488,10 +591,6 @@ typedef struct {
     int                      last_bw_streams;
     int                      last_bw_duration;
     int                      last_bw_failed;
-    /* server info */
-    const char *target_ip;
-    int         port;
-    char        server_str[64];
 } AppCtx;
 
 /* ================================================================== */
@@ -500,10 +599,10 @@ typedef struct {
 static void execute_test(AppCtx *ctx)
 {
     if (ctx->test_type == TEST_ICMP) {
-        render_running("ICMP Reachability", ctx->target_ip);
+        render_running("ICMP Reachability", ctx->target_ip_buf);
 
         struct icmp_stats s = {0};
-        int rc = icmp_ping(ctx->target_ip, ctx->ping_count, &s);
+        int rc = icmp_ping(ctx->target_ip_buf, ctx->ping_count, &s);
         ctx->last_icmp    = s;
         ctx->last_icmp_rc = rc;
 
@@ -518,24 +617,26 @@ static void execute_test(AppCtx *ctx)
         history_append(&r);
 
     } else {
-        render_running("TCP Bandwidth", ctx->target_ip);
+        render_running("TCP Bandwidth", ctx->target_ip_buf);
 
         struct client_args args = {
-            .target_ip          = ctx->target_ip,
+            .target_ip          = ctx->target_ip_buf,
             .port               = ctx->port,
             .ping_count         = ctx->ping_count,
             .duration           = ctx->duration,
             .streams            = ctx->streams,
-            .json_output        = 0,
-            .output_path        = NULL,
-            .dss_mode           = 1,
-            .dss_window_ms      = DSS_WINDOW_MS,
-            .skip_version_check = 1,
+            .json_output        = ctx->json_output,
+            .output_path        = ctx->output_path[0] ? ctx->output_path : NULL,
+            .dss_mode           = ctx->dss_mode,
+            .dss_window_ms      = ctx->dss_window_ms,
+            .skip_version_check = ctx->version_checked,
         };
 
         struct run_client_result bw = {0};
         int rc = run_client_ex(&args, &bw);
 
+        /* Reset flag on failure so the handshake is retried next run. */
+        ctx->version_checked  = (rc == 0) ? 1 : 0;
         ctx->last_bw_streams  = ctx->streams;
         ctx->last_bw_duration = ctx->duration;
         ctx->last_bw_failed   = (rc != 0);
@@ -561,58 +662,130 @@ static void update_logic(AppCtx *ctx, int key)
     switch (ctx->state) {
 
     /* ---- MAIN MENU ---- */
-    case STATE_MAIN_MENU:
+    case STATE_MAIN_MENU: {
+        int menu_items = (ctx->mode == 0) ? MENU_ITEMS_CLIENT
+                                          : MENU_ITEMS_SERVER;
         if (key == KEY_UP)
-            ctx->sel = UI_WRAP(ctx->sel - 1, MENU_ITEMS);
+            ctx->sel = UI_WRAP(ctx->sel - 1, menu_items);
         else if (key == KEY_DOWN)
-            ctx->sel = UI_WRAP(ctx->sel + 1, MENU_ITEMS);
+            ctx->sel = UI_WRAP(ctx->sel + 1, menu_items);
         else if (key == KEY_ENTER) {
-            switch (ctx->sel) {
-            case 0: ctx->test_type = TEST_ICMP; ctx->state = STATE_RUNNING_TEST; break;
-            case 1: ctx->test_type = TEST_TCP;  ctx->state = STATE_RUNNING_TEST; break;
-            case 2: ctx->state = STATE_VIEW_HISTORY; break;
-            case 3: ctx->state = STATE_SETTINGS; ctx->sel = 0; break;
-            case 4: ctx->state = STATE_EXIT; break;
+            if (ctx->mode == 0) {
+                switch (ctx->sel) {
+                case 0: ctx->test_type = TEST_ICMP; ctx->state = STATE_RUNNING_TEST;   break;
+                case 1: ctx->test_type = TEST_TCP;  ctx->state = STATE_RUNNING_TEST;   break;
+                case 2: ctx->state = STATE_VIEW_HISTORY;                               break;
+                case 3: ctx->state = STATE_SETTINGS; ctx->sel = 0;                    break;
+                case 4: ctx->state = STATE_EXIT;                                       break;
+                }
+            } else {
+                switch (ctx->sel) {
+                case 0: ctx->state = STATE_RUNNING_SERVER;                             break;
+                case 1: ctx->state = STATE_SETTINGS; ctx->sel = 0;                    break;
+                case 2: ctx->state = STATE_EXIT;                                       break;
+                }
             }
         } else if (key == KEY_QUIT || key == KEY_ESC) {
             ctx->state = STATE_EXIT;
         }
         break;
+    }
 
     /* ---- SETTINGS ---- */
-    case STATE_SETTINGS:
+    case STATE_SETTINGS: {
+        int settings_items = (ctx->mode == 0) ? CLIENT_SETTINGS_ITEMS
+                                              : SERVER_SETTINGS_ITEMS;
         if (key == KEY_UP)
-            ctx->sel = UI_WRAP(ctx->sel - 1, SETTINGS_ITEMS);
+            ctx->sel = UI_WRAP(ctx->sel - 1, settings_items);
         else if (key == KEY_DOWN)
-            ctx->sel = UI_WRAP(ctx->sel + 1, SETTINGS_ITEMS);
+            ctx->sel = UI_WRAP(ctx->sel + 1, settings_items);
         else if (key == KEY_ENTER) {
-            switch (ctx->sel) {
-            case 0:
-                ctx->streams = read_int_field("TCP streams",
-                                              1, DSS_MAX_STREAMS,
-                                              ctx->streams);
-                break;
-            case 1:
-                ctx->duration = read_int_field("TCP duration (s)",
-                                               1, 3600,
-                                               ctx->duration);
-                break;
-            case 2:
-                ctx->ping_count = read_int_field("ICMP ping count",
-                                                 1, 100,
-                                                 ctx->ping_count);
-                break;
-            case 3:
-                /* Back — return cursor to "Change Parameters" in main menu. */
-                ctx->state = STATE_MAIN_MENU;
-                ctx->sel   = 3;
-                break;
+            if (ctx->mode == 0) {
+                switch (ctx->sel) {
+                case 0:
+                    ctx->mode = 1;
+                    ctx->sel  = 0;
+                    break;
+                case 1:
+                    read_str_field("Target IP", ctx->target_ip_buf,
+                                   sizeof(ctx->target_ip_buf));
+                    ctx->version_checked = 0;
+                    snprintf(ctx->server_str, sizeof(ctx->server_str),
+                             "%s:%d",
+                             ctx->target_ip_buf[0] ? ctx->target_ip_buf
+                                                   : "<not set>",
+                             ctx->port);
+                    break;
+                case 2:
+                    ctx->port = read_int_field("Port", 1, 65535, ctx->port);
+                    snprintf(ctx->server_str, sizeof(ctx->server_str),
+                             "%s:%d",
+                             ctx->target_ip_buf[0] ? ctx->target_ip_buf
+                                                   : "<not set>",
+                             ctx->port);
+                    break;
+                case 3:
+                    ctx->ping_count = read_int_field("ICMP ping count",
+                                                     1, 100,
+                                                     ctx->ping_count);
+                    break;
+                case 4:
+                    ctx->duration = read_int_field("TCP duration (s)",
+                                                   1, 3600,
+                                                   ctx->duration);
+                    break;
+                case 5:
+                    ctx->streams = read_int_field("TCP streams",
+                                                  1, DSS_MAX_STREAMS,
+                                                  ctx->streams);
+                    break;
+                case 6:
+                    ctx->dss_mode = !ctx->dss_mode;
+                    break;
+                case 7:
+                    ctx->dss_window_ms = read_int_field("DSS window (ms)",
+                                                        1, 10000,
+                                                        ctx->dss_window_ms);
+                    break;
+                case 8:
+                    ctx->json_output = !ctx->json_output;
+                    break;
+                case 9:
+                    read_str_field("Output file (blank = stdout)",
+                                   ctx->output_path,
+                                   sizeof(ctx->output_path));
+                    break;
+                case 10:
+                    ctx->state = STATE_MAIN_MENU;
+                    ctx->sel   = 3;
+                    break;
+                }
+            } else {
+                switch (ctx->sel) {
+                case 0:
+                    ctx->mode = 0;
+                    ctx->sel  = 0;
+                    break;
+                case 1:
+                    ctx->port = read_int_field("Port", 1, 65535, ctx->port);
+                    break;
+                case 2:
+                    ctx->max_dur = read_int_field("Max duration (s, 0=unlimited)",
+                                                  0, 86400,
+                                                  ctx->max_dur);
+                    break;
+                case 3:
+                    ctx->state = STATE_MAIN_MENU;
+                    ctx->sel   = 1;
+                    break;
+                }
             }
         } else if (key == KEY_ESC || key == KEY_QUIT) {
             ctx->state = STATE_MAIN_MENU;
-            ctx->sel   = 3;
+            ctx->sel   = (ctx->mode == 0) ? 3 : 1;
         }
         break;
+    }
 
     /* ---- VIEW_RESULTS / VIEW_HISTORY: any key returns to main ---- */
     default:
@@ -629,8 +802,7 @@ static void render_current_screen(const AppCtx *ctx)
 {
     switch (ctx->state) {
     case STATE_MAIN_MENU:
-        render_main_menu(ctx->sel, ctx->streams, ctx->duration,
-                         ctx->ping_count, ctx->server_str);
+        render_main_menu(ctx);
         break;
     case STATE_VIEW_RESULTS:
         if (ctx->test_type == TEST_ICMP)
@@ -645,8 +817,7 @@ static void render_current_screen(const AppCtx *ctx)
         render_history();
         break;
     case STATE_SETTINGS:
-        render_settings(ctx->sel, ctx->streams, ctx->duration,
-                        ctx->ping_count);
+        render_settings(ctx);
         break;
     default:
         break;
@@ -656,7 +827,7 @@ static void render_current_screen(const AppCtx *ctx)
 /* ================================================================== */
 /* interactive_main                                                    */
 /* ================================================================== */
-int interactive_main(const char *target_ip, int port, int ping_count)
+int interactive_main(void)
 {
     if (!isatty(STDIN_FILENO)) {
         fprintf(stderr,
@@ -672,28 +843,26 @@ int interactive_main(const char *target_ip, int port, int ping_count)
     signal(SIGINT,  sig_cleanup);
     signal(SIGTERM, sig_cleanup);
 
-    AppCtx ctx = {
-        .state            = STATE_MAIN_MENU,
-        .sel              = 0,
-        .streams          = DEFAULT_STREAMS,
-        .duration         = DEFAULT_DURATION,
-        .ping_count       = ping_count,
-        .target_ip        = target_ip,
-        .port             = port,
-        .last_icmp_rc     = -1,
-        .last_bw_streams  = 0,
-        .last_bw_duration = 0,
-        .last_bw_failed   = 1,
-    };
-    snprintf(ctx.server_str, sizeof(ctx.server_str), "%s:%d", target_ip, port);
-
-    /* Version check — runs once here so individual tests skip the handshake. */
-    if (client_check_server_version(target_ip, port, 0) != 0) {
-        fprintf(stderr,
-                "spdchk: version check failed — cannot start interactive mode.\n");
-        history_free();
-        return -1;
-    }
+    AppCtx ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.state            = STATE_MAIN_MENU;
+    ctx.sel              = 0;
+    ctx.mode             = 0;
+    ctx.port             = DEFAULT_PORT;
+    ctx.ping_count       = DEFAULT_COUNT;
+    ctx.duration         = DEFAULT_DURATION;
+    ctx.streams          = DEFAULT_STREAMS;
+    ctx.dss_mode         = 1;
+    ctx.dss_window_ms    = DSS_WINDOW_MS;
+    ctx.json_output      = 0;
+    ctx.version_checked  = 0;
+    ctx.max_dur          = 0;
+    ctx.last_icmp_rc     = -1;
+    ctx.last_bw_streams  = 0;
+    ctx.last_bw_duration = 0;
+    ctx.last_bw_failed   = 1;
+    snprintf(ctx.server_str, sizeof(ctx.server_str),
+             "<not set>:%d", DEFAULT_PORT);
 
     setup_terminal_raw_mode();
 
@@ -702,6 +871,16 @@ int interactive_main(const char *target_ip, int port, int ping_count)
         if (ctx.state == STATE_RUNNING_TEST) {
             execute_test(&ctx);
             ctx.state = STATE_VIEW_RESULTS;
+        }
+
+        /* Start server (blocking; terminal restored during the call). */
+        if (ctx.state == STATE_RUNNING_SERVER) {
+            restore_terminal_mode();
+            render_running_server(ctx.port, ctx.max_dur);
+            run_server(ctx.port, ctx.max_dur);
+            setup_terminal_raw_mode();
+            ctx.state = STATE_MAIN_MENU;
+            ctx.sel   = 0;
         }
 
         render_current_screen(&ctx);
@@ -721,7 +900,7 @@ int interactive_main(const char *target_ip, int port, int ping_count)
 
     restore_terminal_mode();
     printf(A_CLEAR);
-    printf("Exiting spdchk interactive mode. Session history discarded.\n");
+    printf("Exiting spdchk. Session history discarded.\n");
     history_free();
     return 0;
 }
