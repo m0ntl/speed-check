@@ -9,7 +9,7 @@
 
 Both modes are compiled into a single binary toggled by CLI flags (`-s` server, `-c <IP>` client). The binary requires `CAP_NET_RAW` (or `sudo`) for the raw ICMP socket.
 
-Current version: **0.7.2** (defined in `spdchk.h`).
+Current version: **0.7.3** (defined in `spdchk.h`).
 
 ### CLI Flags
 
@@ -37,13 +37,13 @@ Current version: **0.7.2** (defined in `spdchk.h`).
 | `spdchk.h` | Shared constants (`DEFAULT_PORT`, `DEFAULT_COUNT`, `DEFAULT_DURATION`, `DEFAULT_STREAMS`, DSS parameters), `SPDCHK_VERSION` macro, and the packed `spdchk_payload` wire struct (seq number, departure timestamp, optional padding) |
 | `main.c` | Entry point — full CLI argument parsing (`getopt_long`), input validation, logger initialisation, and dispatch to `run_server()` or `run_client()` |
 | `client.h` | Declares `struct client_args` (all test parameters, including `skip_version_check` to suppress Phase 0 when the handshake has already been performed), `struct run_client_result` (programmatic result data), `client_check_server_version()`, `run_client()`, and `run_client_ex()` |
-| `client.c` | Implements the two-phase test: ICMP multi-ping via `icmp_ping()`, version handshake with the server via `client_check_server_version()` (including DSS capability flag; skipped when `args->skip_version_check` is set), parallel TCP stream workers (`stream_worker` threads), Dynamic Stream Scaling loop (enabled by default; disabled when `dss_mode = 0`), and final metrics output (plain text or JSON); `run_client_ex()` additionally populates a `run_client_result` struct for callers that need the data programmatically |
+| `client.c` | Implements the two-phase test: ICMP multi-ping via `icmp_ping()`, version handshake with the server via `client_check_server_version()` (including DSS capability flag; skipped when `args->skip_version_check` is set), parallel TCP stream workers (`stream_worker` threads), Dynamic Stream Scaling loop (enabled by default; disabled when `dss_mode = 0`), and final metrics output (plain text or JSON); DSS throughput is computed from exactly `optimal_n` streams — extra probe streams that triggered plateau detection are joined but excluded from the byte total so the reported metric is consistent with the displayed stream count; `run_client_ex()` additionally populates a `run_client_result` struct for callers that need the data programmatically |
 | `server.h` | Declares `run_server(port, max_duration)` |
 | `server.c` | Passive bandwidth sink — binds a TCP socket, accepts connections in per-thread handlers, performs the version handshake (accepts or rejects mismatched clients), drains incoming data, and enforces the optional `max_duration` receive timeout |
 | `icmp.h` | Declares `struct icmp_stats` (avg latency, packet-loss %) and `icmp_ping()` |
 | `icmp.c` | Raw-socket ICMP implementation: builds echo-request packets, computes the Internet checksum, sends `count` pings, receives replies with per-packet RTT timing, and populates `icmp_stats` |
-| `metrics.h` | Declares `struct ping_result`, `struct bandwidth_result`, `struct metrics_result`, and the output functions |
-| `metrics.c` | Computes and formats results: `print_metrics()` (loss %, min/avg/max RTT, jitter), `print_bandwidth()` (throughput in Gbps), and `print_results_json()` (full JSON report with timestamp, ping stats, and bandwidth stats) |
+| `metrics.h` | Declares `struct ping_result`, `struct bandwidth_result` (`parallel_streams` = effective stream count used for throughput; `optimal_streams` = total streams DSS probed, or 0 when no extra probe ran / static mode), `struct metrics_result`, and the output functions |
+| `metrics.c` | Computes and formats results: `print_metrics()` (loss %, min/avg/max RTT, jitter), `print_bandwidth()` (throughput in Gbps; three stream-count formats: plain `N` for static, `N (DSS)` when no extra probe, `N optimal (of M probed, DSS)` when a plateau probe ran), and `print_results_json()` (full JSON report with timestamp, ping stats, and bandwidth stats; DSS probe count emitted as `dss_probed_streams` when non-zero) |
 | `logger.h` | Declares the four-level log system (`ERROR`/`INFO`/`DEBUG`/`TRACE`), `logger_init()`, `logger_close()`, and the `log_error` / `log_info` / `log_debug` / `log_trace` convenience macros |
 | `logger.c` | Thread-safe dual-output logger: writes to both syslog (`LOG_DAEMON` facility) and stdout/stderr; TRACE messages are rate-limited to 1 000 calls/s to prevent disk exhaustion |
 | `interactive.h` | Declares `interactive_main()` (all implementation types are internal to `interactive.c`) |
