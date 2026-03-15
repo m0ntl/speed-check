@@ -4,6 +4,7 @@
 #include <getopt.h>
 
 #include "spdchk.h"
+#include "logger.h"
 #include "server.h"
 #include "client.h"
 
@@ -24,7 +25,9 @@ static void usage(const char *prog)
             "  -n <streams>   Parallel TCP streams     (default: %d)\n"
             "  -m <seconds>   Server max-duration per test (0 = unlimited)\n"
             "  -j             Emit JSON output\n"
-            "  -o <file>      Write statistics to <file> instead of stdout\n",
+            "  -o <file>      Write statistics to <file> instead of stdout\n"
+            "  -v             Increase log verbosity (cumulative; -v=INFO -vv=DEBUG -vvv=TRACE)\n"
+            "  --log-level N  Set log verbosity directly (0=ERROR 1=INFO 2=DEBUG 3=TRACE)\n",
             prog, prog,
             DEFAULT_PORT, DEFAULT_COUNT, DEFAULT_DURATION, DEFAULT_STREAMS);
 }
@@ -42,9 +45,17 @@ int main(int argc, char *argv[])
     char *output_path  = NULL;
     int   dss_mode     = 0;
     int   dss_window   = DSS_WINDOW_MS;
+    int   verbose_cnt  = 0;
+    int   explicit_log = -1;
     int   opt;
 
-    while ((opt = getopt(argc, argv, "sc:p:i:d:n:m:jDw:o:")) != -1) {
+    static const struct option long_opts[] = {
+        { "log-level", required_argument, NULL, 'L' },
+        { NULL, 0, NULL, 0 }
+    };
+
+    while ((opt = getopt_long(argc, argv, "sc:p:i:d:n:m:jDw:o:v",
+                              long_opts, NULL)) != -1) {
         switch (opt) {
         case 's':
             mode_server = 1;
@@ -105,6 +116,16 @@ int main(int argc, char *argv[])
         case 'o':
             output_path = optarg;
             break;
+        case 'v':
+            verbose_cnt++;
+            break;
+        case 'L':
+            explicit_log = atoi(optarg);
+            if (explicit_log < 0 || explicit_log > 3) {
+                fprintf(stderr, "Error: --log-level must be 0-3.\n");
+                return EXIT_FAILURE;
+            }
+            break;
         default:
             usage(argv[0]);
             return EXIT_FAILURE;
@@ -123,19 +144,32 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    if (mode_server)
-        return run_server(port, max_dur) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+    /* Resolve log level: --log-level beats -v count; -v count beats default. */
+    log_level_t log_level = LOG_LEVEL_INFO;
+    if (explicit_log >= 0)
+        log_level = (log_level_t)explicit_log;
+    else if (verbose_cnt > 0)
+        log_level = (log_level_t)(verbose_cnt > 3 ? 3 : verbose_cnt);
+    logger_init(log_level);
 
-    struct client_args args = {
-        .target_ip    = target_ip,
-        .port         = port,
-        .ping_count   = ping_count,
-        .duration     = duration,
-        .streams      = streams,
-        .json_output  = json_output,
-        .output_path  = output_path,
-        .dss_mode     = dss_mode,
-        .dss_window_ms= dss_window,
-    };
-    return run_client(&args) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+    int ret;
+    if (mode_server)
+        ret = run_server(port, max_dur) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+    else {
+        struct client_args args = {
+            .target_ip    = target_ip,
+            .port         = port,
+            .ping_count   = ping_count,
+            .duration     = duration,
+            .streams      = streams,
+            .json_output  = json_output,
+            .output_path  = output_path,
+            .dss_mode     = dss_mode,
+            .dss_window_ms= dss_window,
+        };
+        ret = run_client(&args) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+
+    logger_close();
+    return ret;
 }

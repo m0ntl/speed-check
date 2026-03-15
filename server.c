@@ -11,6 +11,7 @@
 #include <arpa/inet.h>
 
 #include "server.h"
+#include "logger.h"
 #include "spdchk.h"
 
 #define DRAIN_BUF_SIZE (64 * 1024)
@@ -31,8 +32,8 @@ static void *handle_connection(void *arg)
 
     char addr_str[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &peer.sin_addr, addr_str, sizeof(addr_str));
-    printf("[SERVER] Client connected from %s:%d\n",
-           addr_str, ntohs(peer.sin_port));
+    log_info("SERVER", "client connected from %s:%d",
+             addr_str, ntohs(peer.sin_port));
 
     if (max_duration > 0) {
         struct timeval tv = { .tv_sec = max_duration, .tv_usec = 0 };
@@ -75,16 +76,15 @@ static void *handle_connection(void *arg)
         if (strcmp(ver_buf, SPDCHK_VERSION) == 0) {
             send(fd, "OK\n", 3, MSG_NOSIGNAL);
             if (dss_flag)
-                printf("[SERVER] Client %s: Dynamic Stream Scaling enabled.\n",
-                       addr_str);
+                log_info("SERVER", "client %s: Dynamic Stream Scaling enabled",
+                         addr_str);
         } else {
             char resp[64];
             int  rlen = snprintf(resp, sizeof(resp),
                                  "ERR VERSION_MISMATCH %s\n", SPDCHK_VERSION);
             send(fd, resp, (size_t)rlen, MSG_NOSIGNAL);
-            printf("[SERVER] Rejected %s: version mismatch "
-                   "(client=%s server=%s).\n",
-                   addr_str, ver_buf, SPDCHK_VERSION);
+            log_info("SERVER", "rejected %s: version mismatch (client=%s server=%s)",
+                     addr_str, ver_buf, SPDCHK_VERSION);
         }
         close(fd);
         return NULL;
@@ -101,10 +101,10 @@ static void *handle_connection(void *arg)
         ; /* drain — this is the bandwidth sink */
 
     if (n < 0 && errno == EAGAIN)
-        printf("[SERVER] Client %s: max-duration reached, closing.\n", addr_str);
+        log_info("SERVER", "client %s: max-duration reached, closing", addr_str);
 
     free(buf);
-    printf("[SERVER] Client %s disconnected.\n", addr_str);
+    log_info("SERVER", "client %s disconnected", addr_str);
     close(fd);
     return NULL;
 }
@@ -117,12 +117,12 @@ int run_server(int port, int max_duration)
 
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
-        perror("server: socket");
+        log_error("SERVER", "socket: %s", strerror(errno));
         return -1;
     }
 
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-        perror("server: setsockopt SO_REUSEADDR");
+        log_error("SERVER", "setsockopt SO_REUSEADDR: %s", strerror(errno));
         close(server_fd);
         return -1;
     }
@@ -133,22 +133,22 @@ int run_server(int port, int max_duration)
     addr.sin_port        = htons((uint16_t)port);
 
     if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("server: bind");
+        log_error("SERVER", "bind: %s", strerror(errno));
         close(server_fd);
         return -1;
     }
 
     if (listen(server_fd, SOMAXCONN) < 0) {
-        perror("server: listen");
+        log_error("SERVER", "listen: %s", strerror(errno));
         close(server_fd);
         return -1;
     }
 
     if (max_duration > 0)
-        printf("[SERVER] Listening on port %d (max-duration: %d s)...\n",
-               port, max_duration);
+        log_info("SERVER", "listening on port %d (max-duration: %d s)",
+                 port, max_duration);
     else
-        printf("[SERVER] Listening on port %d...\n", port);
+        log_info("SERVER", "listening on port %d", port);
 
     signal(SIGPIPE, SIG_IGN);
 
@@ -158,7 +158,7 @@ int run_server(int port, int max_duration)
         int                client_fd = accept(server_fd,
                                               (struct sockaddr *)&peer, &plen);
         if (client_fd < 0) {
-            perror("server: accept");
+            log_error("SERVER", "accept: %s", strerror(errno));
             continue;
         }
 
@@ -173,7 +173,7 @@ int run_server(int port, int max_duration)
 
         pthread_t tid;
         if (pthread_create(&tid, NULL, handle_connection, ctx) != 0) {
-            perror("server: pthread_create");
+            log_error("SERVER", "pthread_create: %s", strerror(errno));
             free(ctx);
             close(client_fd);
             continue;

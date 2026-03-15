@@ -5,6 +5,7 @@
 #include <time.h>
 
 #include "metrics.h"
+#include "logger.h"
 
 void print_metrics(FILE *out, const struct metrics_result *r)
 {
@@ -18,7 +19,7 @@ void print_metrics(FILE *out, const struct metrics_result *r)
     /* Collect valid (non-lost) RTTs into a compact array */
     double *valid = malloc((size_t)r->count * sizeof(double));
     if (!valid) {
-        fprintf(stderr, "metrics: out of memory\n");
+        log_error("METRICS", "out of memory");
         return;
     }
 

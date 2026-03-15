@@ -10,6 +10,7 @@
 #include <time.h>
 
 #include "icmp.h"
+#include "logger.h"
 
 /* RFC 1071 one's-complement checksum */
 static uint16_t icmp_checksum(void *buf, int len)
@@ -46,12 +47,12 @@ int icmp_ping(const char *target_ip, int count, struct icmp_stats *stats)
 
     sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
     if (sock < 0) {
-        perror("icmp: socket");
+        log_error("ICMP", "socket: %s", strerror(errno));
         return -1;
     }
 
     if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
-        perror("icmp: setsockopt SO_RCVTIMEO");
+        log_error("ICMP", "setsockopt SO_RCVTIMEO: %s", strerror(errno));
         close(sock);
         return -1;
     }
@@ -59,7 +60,7 @@ int icmp_ping(const char *target_ip, int count, struct icmp_stats *stats)
     memset(&dest, 0, sizeof(dest));
     dest.sin_family = AF_INET;
     if (inet_pton(AF_INET, target_ip, &dest.sin_addr) != 1) {
-        fprintf(stderr, "icmp: invalid address '%s'\n", target_ip);
+        log_error("ICMP", "invalid address '%s'", target_ip);
         close(sock);
         return -1;
     }
@@ -83,7 +84,7 @@ int icmp_ping(const char *target_ip, int count, struct icmp_stats *stats)
 
         if (sendto(sock, pkt, sizeof(pkt), 0,
                    (struct sockaddr *)&dest, sizeof(dest)) < 0) {
-            perror("icmp: sendto");
+            log_error("ICMP", "sendto: %s", strerror(errno));
             continue;
         }
 
@@ -95,9 +96,9 @@ int icmp_ping(const char *target_ip, int count, struct icmp_stats *stats)
 
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK)
-                printf("[ICMP] Seq %d: timeout\n", seq);
+                log_debug("ICMP", "seq %d: timeout", seq);
             else
-                perror("icmp: recvfrom");
+                log_error("ICMP", "recvfrom: %s", strerror(errno));
             continue;
         }
 
@@ -114,22 +115,22 @@ int icmp_ping(const char *target_ip, int count, struct icmp_stats *stats)
         double rtt = timespec_diff_ms(&t_end, &t_start);
         total_rtt += rtt;
         received++;
-        printf("[ICMP] Seq %d: reply from %s  RTT = %.3f ms\n",
-               seq, target_ip, rtt);
+        log_trace("ICMP", "seq %d: reply from %s  RTT = %.3f ms",
+                  seq, target_ip, rtt);
     }
 
     close(sock);
 
     if (received == 0) {
-        fprintf(stderr, "[ICMP] Error: Destination Unreachable — no replies received.\n");
+        log_error("ICMP", "Destination Unreachable — no replies received");
         return -1;
     }
 
     stats->avg_latency_ms  = total_rtt / received;
     stats->packet_loss_pct = (1.0 - (double)received / count) * 100.0;
 
-    printf("[ICMP] %d/%d packets received, %.1f%% loss, avg RTT %.3f ms\n",
-           received, count,
-           stats->packet_loss_pct, stats->avg_latency_ms);
+    log_info("ICMP", "%d/%d packets received, %.1f%% loss, avg RTT %.3f ms",
+             received, count,
+             stats->packet_loss_pct, stats->avg_latency_ms);
     return 0;
 }

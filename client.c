@@ -13,6 +13,7 @@
 
 #include "client.h"
 #include "icmp.h"
+#include "logger.h"
 #include "metrics.h"
 
 static int connect_timed(int fd, const struct sockaddr *addr, socklen_t len, int timeout_ms);
@@ -30,7 +31,7 @@ static int check_server_version(const char *target_ip, int port, int dss_mode)
 {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
-        perror("[CLIENT] version-check: socket");
+        log_error("CLIENT", "version-check socket: %s", strerror(errno));
         return -1;
     }
 
@@ -42,8 +43,7 @@ static int check_server_version(const char *target_ip, int port, int dss_mode)
 
     if (connect_timed(sock, (struct sockaddr *)&addr,
                       sizeof(addr), CONNECT_TIMEOUT_SEC) < 0) {
-        fprintf(stderr, "[CLIENT] Version check: cannot reach server: %s\n",
-                strerror(errno));
+        log_error("CLIENT", "version check: cannot reach server: %s", strerror(errno));
         close(sock);
         return -1;
     }
@@ -61,7 +61,7 @@ static int check_server_version(const char *target_ip, int port, int dss_mode)
         snprintf(greeting, sizeof(greeting),
                  "SPDCHK_VER " SPDCHK_VERSION "\n");
     if (send(sock, greeting, strlen(greeting), MSG_NOSIGNAL) < 0) {
-        perror("[CLIENT] version-check: send");
+        log_error("CLIENT", "version-check send: %s", strerror(errno));
         close(sock);
         return -1;
     }
@@ -86,23 +86,22 @@ static int check_server_version(const char *target_ip, int port, int dss_mode)
         char *sv = resp + 21;
         char *nl = strchr(sv, '\n');
         if (nl) *nl = '\0';
-        fprintf(stderr,
-                "[CLIENT] Version mismatch: client=%s, server=%s.\n"
-                "         Please upgrade both sides to the same version.\n",
-                SPDCHK_VERSION, sv);
+        log_error("CLIENT",
+                  "version mismatch: client=%s, server=%s. "
+                  "Please upgrade both sides to the same version.",
+                  SPDCHK_VERSION, sv);
         return -1;
     }
 
     if (ri == 0) {
-        fprintf(stderr,
-                "[CLIENT] Version check timed out — the server may be an older\n"
-                "         build that does not support the handshake.\n"
-                "         Please upgrade the server to %s.\n",
-                SPDCHK_VERSION);
+        log_error("CLIENT",
+                  "version check timed out — server may not support the handshake. "
+                  "Please upgrade the server to %s.",
+                  SPDCHK_VERSION);
         return -1;
     }
 
-    fprintf(stderr, "[CLIENT] Unexpected version-check response: %s\n", resp);
+    log_error("CLIENT", "unexpected version-check response: %s", resp);
     return -1;
 }
 
@@ -153,7 +152,7 @@ static void *stream_worker(void *arg)
 
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
-        perror("client: socket");
+        log_error("CLIENT", "stream socket: %s", strerror(errno));
         __atomic_store_n(&ctx->bytes_sent, (long long)-1, __ATOMIC_RELAXED);
         return NULL;
     }
@@ -166,8 +165,8 @@ static void *stream_worker(void *arg)
 
     if (connect_timed(sock, (struct sockaddr *)&addr,
                       sizeof(addr), CONNECT_TIMEOUT_SEC) < 0) {
-        fprintf(stderr, "[CLIENT] Stream %d: connect failed: %s\n",
-                ctx->stream_id, strerror(errno));
+        log_error("CLIENT", "stream %d: connect failed: %s",
+                  ctx->stream_id, strerror(errno));
         close(sock);
         __atomic_store_n(&ctx->bytes_sent, (long long)-1, __ATOMIC_RELAXED);
         return NULL;
@@ -230,14 +229,13 @@ static int run_bandwidth_dss(const struct client_args *args,
 
     /* Launch the first stream */
     if (spawn_stream(&ctxs[n], &tids[n], n, args->target_ip, args->port) != 0) {
-        perror("[CLIENT] DSS: pthread_create");
+        log_error("CLIENT", "DSS: pthread_create: %s", strerror(errno));
         g_stop = 1;
         return -1;
     }
     n++;
-    printf("[CLIENT] DSS: started stream 1  "
-           "(window=%d ms, threshold=%.0f%%, cap=%d).\n",
-           args->dss_window_ms, DSS_THRESHOLD * 100.0, DSS_MAX_STREAMS);
+    log_info("CLIENT", "DSS: started stream 1 (window=%d ms, threshold=%.0f%%, cap=%d)",
+             args->dss_window_ms, DSS_THRESHOLD * 100.0, DSS_MAX_STREAMS);
 
     long long prev_total = 0;
     double    prev_bw    = 0.0;   /* bytes/s in last window              */
@@ -277,15 +275,15 @@ static int run_bandwidth_dss(const struct client_args *args,
                     if (spawn_stream(&ctxs[n], &tids[n], n,
                                      args->target_ip, args->port) == 0) {
                         n++;
-                        printf("[CLIENT] DSS: %.1f Mbps → adding stream %d\n",
-                               bw / 1.0e6, n);
+                        log_debug("CLIENT", "DSS: %.1f Mbps → adding stream %d",
+                                  bw / 1.0e6, n);
                     } else {
-                        perror("[CLIENT] DSS: pthread_create");
+                        log_error("CLIENT", "DSS: pthread_create: %s", strerror(errno));
                         scaling = 0;
                     }
                 } else {
-                    printf("[CLIENT] DSS: safety cap (%d streams) reached.\n",
-                           DSS_MAX_STREAMS);
+                    log_debug("CLIENT", "DSS: safety cap (%d streams) reached",
+                              DSS_MAX_STREAMS);
                     scaling = 0;
                 }
             } else {
@@ -293,9 +291,9 @@ static int run_bandwidth_dss(const struct client_args *args,
                 double gain_pct = prev_bw > 0.0
                                 ? (bw - prev_bw) / prev_bw * 100.0
                                 : 0.0;
-                printf("[CLIENT] DSS: plateau at %d stream(s)  "
-                       "%.1f Mbps  gain %.1f%% < %.0f%% threshold.\n",
-                       n, bw / 1.0e6, gain_pct, DSS_THRESHOLD * 100.0);
+                log_debug("CLIENT",
+                          "DSS: plateau at %d stream(s)  %.1f Mbps  gain %.1f%% < %.0f%% threshold",
+                          n, bw / 1.0e6, gain_pct, DSS_THRESHOLD * 100.0);
                 scaling = 0;
             }
             prev_bw = bw;
@@ -317,12 +315,12 @@ static int run_bandwidth_dss(const struct client_args *args,
     }
 
     if (ok == 0) {
-        fprintf(stderr, "[CLIENT] DSS: all streams failed to connect.\n");
+        log_error("CLIENT", "DSS: all streams failed to connect");
         return -1;
     }
 
-    printf("[CLIENT] DSS: steady state — %d optimal stream(s), "
-           "%d total active.\n", optimal_n, n);
+    log_info("CLIENT", "DSS: steady state — %d optimal stream(s), %d total active",
+             optimal_n, n);
 
     out->throughput_gbps  = ((double)total_bytes * 8.0)
                           / (double)args->duration / 1.0e9;
@@ -337,21 +335,21 @@ int run_client(const struct client_args *args)
     /* ------------------------------------------------------------------ */
     /* Phase 0: Version check                                              */
     /* ------------------------------------------------------------------ */
-    printf("[CLIENT] Phase 0 \u2014 version check (client %s)%s...\n",
-           SPDCHK_VERSION, args->dss_mode ? " [DSS]" : "");
+    log_info("CLIENT", "Phase 0 — version check (client %s)%s...",
+             SPDCHK_VERSION, args->dss_mode ? " [DSS]" : "");
     if (check_server_version(args->target_ip, args->port, args->dss_mode) != 0)
         return -1;
-    printf("[CLIENT] Version OK.\n\n");
+    log_info("CLIENT", "version OK");
 
     /* ------------------------------------------------------------------ */
     /* Phase 1: ICMP reachability                                          */
     /* ------------------------------------------------------------------ */
-    printf("[CLIENT] Phase 1 — ICMP ping (%d packets) → %s\n",
-           args->ping_count, args->target_ip);
+    log_info("CLIENT", "Phase 1 — ICMP ping (%d packets) → %s",
+             args->ping_count, args->target_ip);
 
     struct icmp_stats icmp_result;
     if (icmp_ping(args->target_ip, args->ping_count, &icmp_result) != 0) {
-        fprintf(stderr, "[CLIENT] Aborting: target unreachable.\n");
+        log_error("CLIENT", "aborting: target unreachable");
         return -1;
     }
 
@@ -361,20 +359,20 @@ int run_client(const struct client_args *args)
     struct bandwidth_result bw = { 0 };
 
     if (args->dss_mode) {
-        printf("\n[CLIENT] Phase 2 — bandwidth test: Dynamic Stream Scaling"
-               ", %d s → %s:%d\n",
-               args->duration, args->target_ip, args->port);
+        log_info("CLIENT",
+                 "Phase 2 — bandwidth test: Dynamic Stream Scaling, %d s → %s:%d",
+                 args->duration, args->target_ip, args->port);
 
         if (run_bandwidth_dss(args, &bw) != 0)
             return -1;
     } else {
-        printf("\n[CLIENT] Phase 2 — bandwidth test: %d stream(s), %d s → %s:%d\n",
-               args->streams, args->duration, args->target_ip, args->port);
+        log_info("CLIENT", "Phase 2 — bandwidth test: %d stream(s), %d s → %s:%d",
+                 args->streams, args->duration, args->target_ip, args->port);
 
         struct stream_arg *ctxs = calloc((size_t)args->streams, sizeof(*ctxs));
         pthread_t         *tids = calloc((size_t)args->streams, sizeof(*tids));
         if (!ctxs || !tids) {
-            perror("client: calloc");
+            log_error("CLIENT", "calloc: %s", strerror(errno));
             free(ctxs);
             free(tids);
             return -1;
@@ -389,7 +387,7 @@ int run_client(const struct client_args *args)
             ctxs[i].bytes_sent = 0;
 
             if (pthread_create(&tids[i], NULL, stream_worker, &ctxs[i]) != 0) {
-                perror("client: pthread_create");
+                log_error("CLIENT", "pthread_create: %s", strerror(errno));
                 g_stop = 1;
                 for (int j = 0; j < i; j++)
                     pthread_join(tids[j], NULL);
@@ -417,7 +415,7 @@ int run_client(const struct client_args *args)
         free(tids);
 
         if (ok_streams == 0) {
-            fprintf(stderr, "[CLIENT] All streams failed to connect.\n");
+            log_error("CLIENT", "all streams failed to connect");
             return -1;
         }
 
@@ -437,8 +435,8 @@ int run_client(const struct client_args *args)
     if (args->output_path) {
         out = fopen(args->output_path, "w");
         if (!out) {
-            fprintf(stderr, "[CLIENT] Cannot open output file '%s': %s\n",
-                    args->output_path, strerror(errno));
+            log_error("CLIENT", "cannot open output file '%s': %s",
+                      args->output_path, strerror(errno));
             return -1;
         }
     }
