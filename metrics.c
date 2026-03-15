@@ -6,12 +6,12 @@
 
 #include "metrics.h"
 
-void print_metrics(const struct metrics_result *r)
+void print_metrics(FILE *out, const struct metrics_result *r)
 {
-    printf("\n--- spdchk statistics ---\n");
+    fprintf(out, "\n--- spdchk statistics ---\n");
 
     if (r->count == 0) {
-        printf("No packets were sent.\n");
+        fprintf(out, "No packets were sent.\n");
         return;
     }
 
@@ -38,12 +38,12 @@ void print_metrics(const struct metrics_result *r)
 
     /* Packet-loss percentage: (1 - received/sent) * 100 */
     double loss = (1.0 - (double)r->received / (double)r->count) * 100.0;
-    printf("Packets: %d sent, %d received, %.1f%% loss\n",
+    fprintf(out, "Packets: %d sent, %d received, %.1f%% loss\n",
            r->count, r->received, loss);
 
     if (n_ok > 0) {
         double avg = sum / (double)n_ok;
-        printf("RTT     : min=%.3f ms  avg=%.3f ms  max=%.3f ms\n",
+        fprintf(out, "RTT     : min=%.3f ms  avg=%.3f ms  max=%.3f ms\n",
                min_t, avg, max_t);
 
         /*
@@ -57,24 +57,24 @@ void print_metrics(const struct metrics_result *r)
                 delta_sum += fabs(valid[i + 1] - valid[i]);
             jitter = delta_sum / (double)(n_ok - 1);
         }
-        printf("Jitter  : %.3f ms\n", jitter);
+        fprintf(out, "Jitter  : %.3f ms\n", jitter);
     }
 
     free(valid);
 }
 
-void print_bandwidth(const struct bandwidth_result *bw)
+void print_bandwidth(FILE *out, const struct bandwidth_result *bw)
 {
-    printf("\n--- bandwidth statistics ---\n");
+    fprintf(out, "\n--- bandwidth statistics ---\n");
     if (bw->throughput_gbps >= 1.0)
-        printf("Throughput : %.3f Gbps\n", bw->throughput_gbps);
+        fprintf(out, "Throughput : %.3f Gbps\n", bw->throughput_gbps);
     else
-        printf("Throughput : %.1f Mbps\n", bw->throughput_gbps * 1000.0);
-    printf("Duration   : %d s\n", bw->duration_sec);
-    printf("Streams    : %d\n", bw->parallel_streams);
+        fprintf(out, "Throughput : %.1f Mbps\n", bw->throughput_gbps * 1000.0);
+    fprintf(out, "Duration   : %d s\n", bw->duration_sec);
+    fprintf(out, "Streams    : %d\n", bw->parallel_streams);
 }
 
-void print_results_json(const struct ping_result *ping,
+void print_results_json(FILE *out, const struct ping_result *ping,
                         const struct bandwidth_result *bw)
 {
     time_t     now     = time(NULL);
@@ -82,16 +82,16 @@ void print_results_json(const struct ping_result *ping,
     char       ts[32];
     strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%SZ", tm_info);
 
-    printf("{\n");
-    printf("  \"timestamp\": \"%s\",\n", ts);
-    printf("  \"ping_stats\": {\n");
-    printf("    \"avg_latency_ms\": %.3f,\n", ping->avg_latency_ms);
-    printf("    \"packet_loss_pct\": %.1f\n",  ping->packet_loss_pct);
-    printf("  },\n");
-    printf("  \"bandwidth_stats\": {\n");
-    printf("    \"throughput_gbps\": %.3f,\n", bw->throughput_gbps);
-    printf("    \"duration_sec\": %d,\n",       bw->duration_sec);
-    printf("    \"parallel_streams\": %d\n",    bw->parallel_streams);
-    printf("  }\n");
-    printf("}\n");
+    fprintf(out, "{\n");
+    fprintf(out, "  \"timestamp\": \"%s\",\n", ts);
+    fprintf(out, "  \"ping_stats\": {\n");
+    fprintf(out, "    \"avg_latency_ms\": %.3f,\n", ping->avg_latency_ms);
+    fprintf(out, "    \"packet_loss_pct\": %.1f\n",  ping->packet_loss_pct);
+    fprintf(out, "  },\n");
+    fprintf(out, "  \"bandwidth_stats\": {\n");
+    fprintf(out, "    \"throughput_gbps\": %.3f,\n", bw->throughput_gbps);
+    fprintf(out, "    \"duration_sec\": %d,\n",       bw->duration_sec);
+    fprintf(out, "    \"parallel_streams\": %d\n",    bw->parallel_streams);
+    fprintf(out, "  }\n");
+    fprintf(out, "}\n");
 }

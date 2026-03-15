@@ -7,10 +7,11 @@
 struct client_args {
     const char *target_ip;
     int         port;
-    int         ping_count;  /* ICMP pings to send          (default 4)  */
-    int         duration;    /* bandwidth test duration, s  (default 10) */
-    int         streams;     /* parallel TCP streams        (default 4)  */
-    int         json_output; /* 1 = emit JSON, 0 = plain text            */
+    int         ping_count;   /* ICMP pings to send          (default 4)  */
+    int         duration;     /* bandwidth test duration, s  (default 10) */
+    int         streams;      /* parallel TCP streams        (default 4)  */
+    int         json_output;  /* 1 = emit JSON, 0 = plain text            */
+    const char *output_path;  /* write statistics here; NULL = stdout     */
 };
 
 /*

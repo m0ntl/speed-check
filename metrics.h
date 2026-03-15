@@ -1,6 +1,8 @@
 #ifndef METRICS_H
 #define METRICS_H
 
+#include <stdio.h>
+
 /* ICMP phase summary */
 struct ping_result {
     double avg_latency_ms;
@@ -31,16 +33,16 @@ struct metrics_result {
  *   - Min / Avg / Max RTT
  *   - Jitter (average of |RTT[i+1] - RTT[i]| over received packets)
  */
-void print_metrics(const struct metrics_result *r);
+void print_metrics(FILE *out, const struct metrics_result *r);
 
 /* print_bandwidth — display throughput result in plain text. */
-void print_bandwidth(const struct bandwidth_result *bw);
+void print_bandwidth(FILE *out, const struct bandwidth_result *bw);
 
 /*
  * print_results_json — emit a JSON object matching the spec schema:
  *   { timestamp, ping_stats, bandwidth_stats }
  */
-void print_results_json(const struct ping_result *ping,
+void print_results_json(FILE *out, const struct ping_result *ping,
                         const struct bandwidth_result *bw);
 
 #endif /* METRICS_H */

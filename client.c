@@ -192,10 +192,23 @@ int run_client(const struct client_args *args)
         .parallel_streams = args->streams,
     };
 
+    FILE *out = stdout;
+    if (args->output_path) {
+        out = fopen(args->output_path, "w");
+        if (!out) {
+            fprintf(stderr, "[CLIENT] Cannot open output file '%s': %s\n",
+                    args->output_path, strerror(errno));
+            return -1;
+        }
+    }
+
     if (args->json_output)
-        print_results_json(&ping, &bw);
+        print_results_json(out, &ping, &bw);
     else
-        print_bandwidth(&bw);
+        print_bandwidth(out, &bw);
+
+    if (args->output_path)
+        fclose(out);
 
     return 0;
 }

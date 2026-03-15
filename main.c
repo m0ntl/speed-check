@@ -23,7 +23,8 @@ static void usage(const char *prog)
             "  -d <seconds>   Bandwidth test duration  (default: %d)\n"
             "  -n <streams>   Parallel TCP streams     (default: %d)\n"
             "  -m <seconds>   Server max-duration per test (0 = unlimited)\n"
-            "  -j             Emit JSON output\n",
+            "  -j             Emit JSON output\n"
+            "  -o <file>      Write statistics to <file> instead of stdout\n",
             prog, prog,
             DEFAULT_PORT, DEFAULT_COUNT, DEFAULT_DURATION, DEFAULT_STREAMS);
 }
@@ -38,9 +39,10 @@ int main(int argc, char *argv[])
     int   streams     = DEFAULT_STREAMS;
     int   max_dur     = 0;
     int   json_output = 0;
+    char *output_path = NULL;
     int   opt;
 
-    while ((opt = getopt(argc, argv, "sc:p:i:d:n:m:j")) != -1) {
+    while ((opt = getopt(argc, argv, "sc:p:i:d:n:m:jo:")) != -1) {
         switch (opt) {
         case 's':
             mode_server = 1;
@@ -87,6 +89,9 @@ int main(int argc, char *argv[])
         case 'j':
             json_output = 1;
             break;
+        case 'o':
+            output_path = optarg;
+            break;
         default:
             usage(argv[0]);
             return EXIT_FAILURE;
@@ -115,6 +120,7 @@ int main(int argc, char *argv[])
         .duration    = duration,
         .streams     = streams,
         .json_output = json_output,
+        .output_path = output_path,
     };
     return run_client(&args) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
