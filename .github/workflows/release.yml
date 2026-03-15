@@ -45,13 +45,33 @@ jobs:
       contents: write
 
     steps:
-      - name: Compute version tag
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute version tag and changelog
         id: version
         run: |
           SHORT_SHA="${GITHUB_SHA::7}"
           DATE="$(date -u +'%Y%m%d')"
-          echo "tag=v${DATE}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          TAG="v${DATE}-${SHORT_SHA}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "name=Release ${DATE} (${SHORT_SHA})" >> "$GITHUB_OUTPUT"
+
+          PREV_TAG="$(git tag --sort=-creatordate | head -n 1)"
+          if [ -z "$PREV_TAG" ]; then
+            CHANGELOG="$(git log --pretty=format:'- %s (%h)' | head -n 50)"
+          else
+            CHANGELOG="$(git log "${PREV_TAG}..HEAD" --pretty=format:'- %s (%h)')"
+          fi
+
+          # Write multi-line changelog to GITHUB_OUTPUT
+          {
+            echo "changelog<<EOF"
+            echo "$CHANGELOG"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Download amd64 artifact
         uses: actions/download-artifact@v4
@@ -77,7 +97,11 @@ jobs:
           tag_name: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.name }}
           body: |
-            Automated release from commit ${{ github.sha }}.
+            ## What's Changed
+
+            ${{ steps.version.outputs.changelog }}
+
+            ---
 
             | Asset | Architecture |
             |-------|-------------|
