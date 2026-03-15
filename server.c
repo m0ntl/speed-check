@@ -11,6 +11,7 @@
 #include <arpa/inet.h>
 
 #include "server.h"
+#include "spdchk.h"
 
 #define DRAIN_BUF_SIZE (64 * 1024)
 
@@ -36,6 +37,42 @@ static void *handle_connection(void *arg)
     if (max_duration > 0) {
         struct timeval tv = { .tv_sec = max_duration, .tv_usec = 0 };
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    }
+
+    /* -------------------------------------------------------------- */
+    /* Version handshake — detect "SPDCHK_VER <ver>\n" greeting.      */
+    /* -------------------------------------------------------------- */
+    char    peek[32];
+    ssize_t pn = recv(fd, peek, sizeof(peek) - 1, MSG_PEEK);
+    if (pn >= 11 && memcmp(peek, "SPDCHK_VER ", 11) == 0) {
+        /* Read and consume the full greeting line. */
+        char line[64];
+        int  li = 0;
+        char ch;
+        while (li < (int)sizeof(line) - 1) {
+            if (recv(fd, &ch, 1, 0) <= 0) break;
+            line[li++] = ch;
+            if (ch == '\n') break;
+        }
+        line[li] = '\0';
+
+        const char *cv = line + 11;   /* skip "SPDCHK_VER " */
+        char *nl = strchr(cv, '\n');
+        if (nl) *nl = '\0';
+
+        if (strcmp(cv, SPDCHK_VERSION) == 0) {
+            send(fd, "OK\n", 3, MSG_NOSIGNAL);
+        } else {
+            char resp[64];
+            int  rlen = snprintf(resp, sizeof(resp),
+                                 "ERR VERSION_MISMATCH %s\n", SPDCHK_VERSION);
+            send(fd, resp, (size_t)rlen, MSG_NOSIGNAL);
+            printf("[SERVER] Rejected %s: version mismatch "
+                   "(client=%s server=%s).\n",
+                   addr_str, cv, SPDCHK_VERSION);
+        }
+        close(fd);
+        return NULL;
     }
 
     char *buf = malloc(DRAIN_BUF_SIZE);

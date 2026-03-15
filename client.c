@@ -21,6 +21,81 @@
 /* Shared stop signal — set to 1 by main thread after the test duration. */
 static volatile int g_stop = 0;
 
+/* One-shot TCP connection that exchanges version strings with the server. */
+static int check_server_version(const char *target_ip, int port)
+{
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        perror("[CLIENT] version-check: socket");
+        return -1;
+    }
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port   = htons((uint16_t)port);
+    inet_pton(AF_INET, target_ip, &addr.sin_addr);
+
+    if (connect_timed(sock, (struct sockaddr *)&addr,
+                      sizeof(addr), CONNECT_TIMEOUT_SEC) < 0) {
+        fprintf(stderr, "[CLIENT] Version check: cannot reach server: %s\n",
+                strerror(errno));
+        close(sock);
+        return -1;
+    }
+
+    /* 5-second receive timeout so an old server does not block forever. */
+    struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    /* Send greeting. */
+    const char greeting[] = "SPDCHK_VER " SPDCHK_VERSION "\n";
+    if (send(sock, greeting, sizeof(greeting) - 1, MSG_NOSIGNAL) < 0) {
+        perror("[CLIENT] version-check: send");
+        close(sock);
+        return -1;
+    }
+
+    /* Read server response line. */
+    char resp[64];
+    int  ri = 0;
+    char c;
+    while (ri < (int)sizeof(resp) - 1) {
+        ssize_t r = recv(sock, &c, 1, 0);
+        if (r <= 0) break;
+        resp[ri++] = c;
+        if (c == '\n') break;
+    }
+    resp[ri] = '\0';
+    close(sock);
+
+    if (strncmp(resp, "OK", 2) == 0)
+        return 0;
+
+    if (strncmp(resp, "ERR VERSION_MISMATCH ", 21) == 0) {
+        char *sv = resp + 21;
+        char *nl = strchr(sv, '\n');
+        if (nl) *nl = '\0';
+        fprintf(stderr,
+                "[CLIENT] Version mismatch: client=%s, server=%s.\n"
+                "         Please upgrade both sides to the same version.\n",
+                SPDCHK_VERSION, sv);
+        return -1;
+    }
+
+    if (ri == 0) {
+        fprintf(stderr,
+                "[CLIENT] Version check timed out — the server may be an older\n"
+                "         build that does not support the handshake.\n"
+                "         Please upgrade the server to %s.\n",
+                SPDCHK_VERSION);
+        return -1;
+    }
+
+    fprintf(stderr, "[CLIENT] Unexpected version-check response: %s\n", resp);
+    return -1;
+}
+
 /* Per-stream worker context. */
 struct stream_arg {
     const char *target_ip;
@@ -112,6 +187,14 @@ static void *stream_worker(void *arg)
 
 int run_client(const struct client_args *args)
 {
+    /* ------------------------------------------------------------------ */
+    /* Phase 0: Version check                                              */
+    /* ------------------------------------------------------------------ */
+    printf("[CLIENT] Phase 0 — version check (client %s)...\n", SPDCHK_VERSION);
+    if (check_server_version(args->target_ip, args->port) != 0)
+        return -1;
+    printf("[CLIENT] Version OK.\n\n");
+
     /* ------------------------------------------------------------------ */
     /* Phase 1: ICMP reachability                                          */
     /* ------------------------------------------------------------------ */
