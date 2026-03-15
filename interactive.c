@@ -528,7 +528,7 @@ static void execute_test(AppCtx *ctx)
             .streams            = ctx->streams,
             .json_output        = 0,
             .output_path        = NULL,
-            .dss_mode           = 0,
+            .dss_mode           = 1,
             .dss_window_ms      = DSS_WINDOW_MS,
             .skip_version_check = 1,
         };

@@ -45,7 +45,7 @@ int main(int argc, char *argv[])
     int   max_dur      = 0;
     int   json_output  = 0;
     char *output_path  = NULL;
-    int   dss_mode     = 0;
+    int   dss_mode     = 1;
     int   dss_window   = DSS_WINDOW_MS;
     int   verbose_cnt  = 0;
     int   explicit_log = -1;
