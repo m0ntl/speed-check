@@ -13,6 +13,8 @@
 #include "client.h"
 #include "icmp.h"
 #include "metrics.h"
+
+static int connect_timed(int fd, const struct sockaddr *addr, socklen_t len, int timeout_ms);
 #include "spdchk.h"
 
 #define SEND_BUF_SIZE       (64 * 1024)  /* 64 KiB per send call       */
