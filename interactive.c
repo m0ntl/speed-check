@@ -388,52 +388,81 @@ static void render_history(void)
     if (test_count == 0) {
         printf("  No tests recorded yet.\n");
     } else {
-        printf(A_BOLD "  %-3s  %-19s  %-5s  %-7s  %-4s  %-11s  %s\n" A_RESET,
-               "#", "Timestamp", "Type", "Streams", "Dur",
-               "Throughput", "Latency");
+        /* ---- ICMP table ---- */
+        printf(A_BOLD A_CYAN "  ICMP Results\n" A_RESET);
         printf(THIN_LINE);
 
+        int icmp_printed = 0;
+        const TestResult *prev_icmp = NULL;
         for (int i = 0; i < test_count; i++) {
             const TestResult *c = &session_history[i];
-            const TestResult *p = (i > 0) ? &session_history[i - 1] : NULL;
-
-            int is_tcp   = (strcmp(c->test_type, "TCP") == 0);
-            int prev_tcp = p && (strcmp(p->test_type, "TCP") == 0);
-
-            printf("  %-3d  %-19s  %-5s  ",
-                   i + 1, c->timestamp, c->test_type);
-
-            if (is_tcp) {
-                /* Streams: highlight if previous row was also TCP and
-                 * the value changed. */
-                hist_int(c->streams,
-                         p ? p->streams : 0,
-                         p && prev_tcp,
-                         "%-7d");
-                printf("  ");
-
-                hist_int(c->duration,
-                         p ? p->duration : 0,
-                         p && prev_tcp,
-                         "%-4d");
-                printf("  ");
-
-                hist_dbl(c->throughput,
-                         p ? p->throughput : 0.0,
-                         p && prev_tcp,
-                         "%-8.3f Gbps");
-                printf("  ");
-            } else {
-                printf("%-7s  %-4s  %-11s  ", "-", "-", "-");
+            if (strcmp(c->test_type, "ICMP") != 0)
+                continue;
+            if (icmp_printed == 0) {
+                printf(A_BOLD "  %-3s  %-19s  %s\n" A_RESET,
+                       "#", "Timestamp", "Latency");
+                printf(THIN_LINE);
             }
+            icmp_printed++;
+            printf("  %-3d  %-19s  ", icmp_printed, c->timestamp);
+            if (c->latency < 0.0) {
+                printf("unreachable");
+            } else {
+                hist_dbl(c->latency,
+                         prev_icmp ? prev_icmp->latency : 0.0,
+                         prev_icmp != NULL,
+                         "%.2f ms");
+            }
+            printf("\n");
+            prev_icmp = c;
+        }
+        if (icmp_printed == 0)
+            printf("  No ICMP tests recorded.\n");
 
-            /* Latency: highlight if changed from any previous test type. */
+        printf("\n");
+
+        /* ---- TCP / Bandwidth table ---- */
+        printf(A_BOLD A_CYAN "  TCP / Bandwidth Results\n" A_RESET);
+        printf(THIN_LINE);
+
+        int tcp_printed = 0;
+        const TestResult *prev_tcp = NULL;
+        for (int i = 0; i < test_count; i++) {
+            const TestResult *c = &session_history[i];
+            if (strcmp(c->test_type, "TCP") != 0)
+                continue;
+            if (tcp_printed == 0) {
+                printf(A_BOLD "  %-3s  %-19s  %-7s  %-4s  %-11s  %s\n" A_RESET,
+                       "#", "Timestamp", "Streams", "Dur",
+                       "Throughput", "Latency");
+                printf(THIN_LINE);
+            }
+            tcp_printed++;
+            printf("  %-3d  %-19s  ", tcp_printed, c->timestamp);
+            hist_int(c->streams,
+                     prev_tcp ? prev_tcp->streams : 0,
+                     prev_tcp != NULL,
+                     "%-7d");
+            printf("  ");
+            hist_int(c->duration,
+                     prev_tcp ? prev_tcp->duration : 0,
+                     prev_tcp != NULL,
+                     "%-4d");
+            printf("  ");
+            hist_dbl(c->throughput,
+                     prev_tcp ? prev_tcp->throughput : 0.0,
+                     prev_tcp != NULL,
+                     "%-8.3f Gbps");
+            printf("  ");
             hist_dbl(c->latency,
-                     p ? p->latency : 0.0,
-                     p != NULL,
+                     prev_tcp ? prev_tcp->latency : 0.0,
+                     prev_tcp != NULL,
                      "%.2f ms");
             printf("\n");
+            prev_tcp = c;
         }
+        if (tcp_printed == 0)
+            printf("  No TCP tests recorded.\n");
     }
 
     printf(THIN_LINE);
