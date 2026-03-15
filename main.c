@@ -72,7 +72,7 @@ int main(int argc, char *argv[])
     }
 
     if (mode_server)
-        return run_server(port) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+        return run_server(port, 0) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 
     return run_client(target_ip, port, count) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

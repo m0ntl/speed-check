@@ -1,6 +1,6 @@
 CC      = gcc
 CFLAGS  = -Wall -Wextra -std=c11 -O2 -D_DEFAULT_SOURCE
-LDFLAGS = -lm
+LDFLAGS = -lm -lpthread
 TARGET  = spdchk
 
 SRCS    = main.c icmp.c server.c client.c metrics.c
