@@ -2,364 +2,688 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
+#include <signal.h>
+#include <termios.h>
 
 #include "interactive.h"
 #include "client.h"
 #include "icmp.h"
 #include "spdchk.h"
 
-/* ------------------------------------------------------------------ */
-/* Session history — volatile dynamic array, freed on exit            */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/* ANSI escape codes                                                    */
+/* ================================================================== */
+#define A_CLEAR   "\033[2J\033[H"
+#define A_BOLD    "\033[1m"
+#define A_DIM     "\033[2m"
+#define A_INVERT  "\033[7m"
+#define A_YELLOW  "\033[33m"
+#define A_CYAN    "\033[36m"
+#define A_RESET   "\033[0m"
 
-static SessionEntry *history_log  = NULL;
-static size_t        log_capacity = 10;
-static size_t        log_size     = 0;
+#define SEP_LINE  "======================================================\n"
+#define THIN_LINE "------------------------------------------------------\n"
+
+/* ================================================================== */
+/* AppState — drives render_current_screen() and update_logic()        */
+/* ================================================================== */
+typedef enum {
+    STATE_MAIN_MENU,
+    STATE_RUNNING_TEST,
+    STATE_VIEW_RESULTS,
+    STATE_VIEW_HISTORY,
+    STATE_SETTINGS,
+    STATE_EXIT
+} AppState;
+
+typedef enum { TEST_ICMP = 0, TEST_TCP = 1 } TestType;
+
+/* ================================================================== */
+/* Session history — volatile dynamic array, freed on exit             */
+/* ================================================================== */
+typedef struct {
+    char   test_type[8];  /* "ICMP" or "TCP"                     */
+    int    streams;       /* TCP parameter; 0 for ICMP-only runs */
+    int    duration;      /* TCP parameter; 0 for ICMP-only runs */
+    double throughput;    /* Gbps; 0 for ICMP-only runs          */
+    double latency;       /* ms; -1 if target unreachable        */
+    char   timestamp[20];
+} TestResult;
+
+static TestResult *session_history = NULL;
+static int         test_count      = 0;
+static int         hist_capacity   = 10;
 
 static int history_init(void)
 {
-    history_log = malloc(log_capacity * sizeof(SessionEntry));
-    return history_log ? 0 : -1;
+    session_history = malloc((size_t)hist_capacity * sizeof(TestResult));
+    return session_history ? 0 : -1;
 }
 
 static void history_free(void)
 {
-    free(history_log);
-    history_log  = NULL;
-    log_size     = 0;
-    log_capacity = 0;
+    free(session_history);
+    session_history = NULL;
+    test_count = hist_capacity = 0;
 }
 
-static int history_append(const SessionEntry *e)
+static int history_append(const TestResult *r)
 {
-    if (log_size == log_capacity) {
-        size_t        new_cap = log_capacity * 2;
-        SessionEntry *tmp     = realloc(history_log,
-                                        new_cap * sizeof(SessionEntry));
+    if (test_count == hist_capacity) {
+        int        new_cap = hist_capacity * 2;
+        TestResult *tmp    = realloc(session_history,
+                                     (size_t)new_cap * sizeof(TestResult));
         if (!tmp)
             return -1;
-        history_log  = tmp;
-        log_capacity = new_cap;
+        session_history = tmp;
+        hist_capacity   = new_cap;
     }
-    history_log[log_size++] = *e;
+    session_history[test_count++] = *r;
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* Misc helpers                                                        */
-/* ------------------------------------------------------------------ */
-
 static void get_timestamp(char *buf, size_t len)
 {
-    time_t    now     = time(NULL);
-    struct tm *tm_inf = localtime(&now);
-    strftime(buf, len, "%Y-%m-%d %H:%M:%S", tm_inf);
+    time_t    now = time(NULL);
+    struct tm *t  = localtime(&now);
+    strftime(buf, len, "%Y-%m-%d %H:%M:%S", t);
 }
 
-/* Drain any leftover characters up to and including the newline. */
-static void flush_input(void)
+/* ================================================================== */
+/* Terminal raw mode (termios)                                         */
+/* ================================================================== */
+static struct termios orig_termios;
+static int            raw_mode_active = 0;
+
+static void setup_terminal_raw_mode(void)
 {
-    int c;
-    while ((c = getchar()) != '\n' && c != EOF)
-        ;
+    /* Save the original termios only on the first call. */
+    if (!raw_mode_active)
+        tcgetattr(STDIN_FILENO, &orig_termios);
+
+    struct termios raw = orig_termios;
+    raw.c_lflag &= ~(unsigned)(ECHO | ICANON);
+    raw.c_cc[VMIN]  = 1;
+    raw.c_cc[VTIME] = 0;
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
+    raw_mode_active = 1;
 }
 
-/* ------------------------------------------------------------------ */
-/* Menu helpers                                                        */
-/* ------------------------------------------------------------------ */
-
-static void print_sep(void)
+static void restore_terminal_mode(void)
 {
-    printf("--------------------------------------------------\n");
-}
-
-static void print_main_menu(int streams, int duration, int ping_count)
-{
-    print_sep();
-    printf("  spdchk %s — Interactive Mode\n", SPDCHK_VERSION);
-    print_sep();
-    printf("  1. Run Reachability (ICMP)  [pings: %d]\n", ping_count);
-    printf("  2. Run Bandwidth   (TCP)    [streams: %d, duration: %d s]\n",
-           streams, duration);
-    printf("  3. View Session History     [%zu test(s) performed]\n", log_size);
-    printf("  4. Change Parameters\n");
-    printf("  5. Exit\n");
-    print_sep();
-    printf("  Selection: ");
-    fflush(stdout);
-}
-
-static void print_params_menu(int streams, int duration, int ping_count)
-{
-    print_sep();
-    printf("  Change Parameters\n");
-    print_sep();
-    printf("  1. TCP streams     (current: %d)\n",   streams);
-    printf("  2. TCP duration    (current: %d s)\n", duration);
-    printf("  3. ICMP ping count (current: %d)\n",   ping_count);
-    printf("  4. Back\n");
-    print_sep();
-    printf("  Selection: ");
-    fflush(stdout);
-}
-
-/* ------------------------------------------------------------------ */
-/* State: display latest ICMP results                                  */
-/* ------------------------------------------------------------------ */
-
-static void state_results_icmp(const struct icmp_stats *s, int rc)
-{
-    print_sep();
-    printf("  ICMP Results\n");
-    print_sep();
-    if (rc == 0) {
-        printf("  Avg RTT:     %.2f ms\n", s->avg_latency_ms);
-        printf("  Packet loss: %.1f%%\n",  s->packet_loss_pct);
-    } else {
-        printf("  Target unreachable — all pings lost.\n");
+    if (raw_mode_active) {
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
+        raw_mode_active = 0;
     }
-    print_sep();
+}
+
+/* Best-effort terminal restore on abnormal exit (signal handler). */
+static void sig_cleanup(int signo)
+{
+    (void)signo;
+    if (raw_mode_active)
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
+    const char msg[] = "\nInterrupted.\n";
+    write(STDOUT_FILENO, msg, sizeof(msg) - 1);
+    _exit(1);
+}
+
+/* ================================================================== */
+/* Input capture                                                       */
+/* ================================================================== */
+#define KEY_UP    1000
+#define KEY_DOWN  1001
+#define KEY_ENTER 1002
+#define KEY_ESC   1003
+#define KEY_QUIT  1004
+
+/*
+ * capture_input — read one logical keypress.
+ * Arrow keys are transmitted as a 3-byte ESC sequence; we peek for the
+ * remaining two bytes with a 100 ms timeout so a bare ESC still works.
+ *
+ *   Up Arrow:   0x1B  0x5B  0x41
+ *   Down Arrow: 0x1B  0x5B  0x42
+ */
+static int capture_input(void)
+{
+    unsigned char c;
+    if (read(STDIN_FILENO, &c, 1) != 1)
+        return -1;
+
+    if (c == 0x1B) {
+        /* Temporarily lower timeout to 100 ms to peek for CSI sequence. */
+        struct termios t;
+        tcgetattr(STDIN_FILENO, &t);
+        t.c_cc[VMIN]  = 0;
+        t.c_cc[VTIME] = 1;   /* 1 = 100 ms */
+        tcsetattr(STDIN_FILENO, TCSANOW, &t);
+
+        unsigned char seq[2] = {0, 0};
+        read(STDIN_FILENO, &seq[0], 1);
+        read(STDIN_FILENO, &seq[1], 1);
+
+        t.c_cc[VMIN]  = 1;
+        t.c_cc[VTIME] = 0;
+        tcsetattr(STDIN_FILENO, TCSANOW, &t);
+
+        if (seq[0] == '[') {
+            if (seq[1] == 'A') return KEY_UP;
+            if (seq[1] == 'B') return KEY_DOWN;
+        }
+        return KEY_ESC;
+    }
+
+    if (c == '\r' || c == '\n') return KEY_ENTER;
+    if (c == 'q'  || c == 'Q') return KEY_QUIT;
+    return (int)c;
+}
+
+/*
+ * read_int_field — temporarily restore canonical mode, prompt for an
+ * integer within [min_val, max_val], and return the validated result
+ * (or current if input is invalid).
+ */
+static int read_int_field(const char *label, int min_val, int max_val,
+                           int current)
+{
+    restore_terminal_mode();
+    printf("\n  %s (%d-%d) [current: %d]: ", label, min_val, max_val, current);
+    fflush(stdout);
+
+    int  val = current;
+    char line[32];
+    if (fgets(line, (int)sizeof(line), stdin)) {
+        int parsed;
+        if (sscanf(line, "%d", &parsed) == 1
+                && parsed >= min_val && parsed <= max_val)
+            val = parsed;
+        else
+            printf("  Out of range — keeping %d.\n", current);
+    }
+
+    setup_terminal_raw_mode();
+    return val;
+}
+
+/* ================================================================== */
+/* TUI rendering helpers                                               */
+/* ================================================================== */
+#define MENU_ITEMS     5
+#define SETTINGS_ITEMS 4
+#define UI_WRAP(x, n)  (((x) % (n) + (n)) % (n))
+
+static void render_item(int idx, int sel, const char *label, const char *extra)
+{
+    if (idx == sel)
+        printf(A_INVERT "  > %-34s" A_RESET, label);
+    else
+        printf("    %-34s", label);
+    if (extra && *extra)
+        printf(A_DIM " %s" A_RESET, extra);
+    printf("\n");
 }
 
 /* ------------------------------------------------------------------ */
-/* State: display latest bandwidth results                             */
+/* Main menu                                                           */
 /* ------------------------------------------------------------------ */
-
-static void state_results_bw(const struct run_client_result *r,
-                              int streams, int duration)
+static void render_main_menu(int sel, int streams, int duration,
+                              int ping_count, const char *server_str)
 {
-    print_sep();
-    printf("  Bandwidth Results\n");
-    print_sep();
-    printf("  Throughput:  %.2f Gbps\n", r->throughput_gbps);
-    printf("  Avg RTT:     %.2f ms\n",   r->avg_latency_ms);
-    printf("  Packet loss: %.1f%%\n",    r->packet_loss_pct);
-    printf("  Streams:     %d\n",        streams);
-    printf("  Duration:    %d s\n",      duration);
-    print_sep();
+    char extra[48];
+
+    printf(A_CLEAR);
+    printf(A_BOLD SEP_LINE A_RESET);
+    printf(A_BOLD "  spdchk %s — Interactive Mode\n" A_RESET, SPDCHK_VERSION);
+    printf("  Server: " A_CYAN "%s" A_RESET "\n", server_str);
+    printf(THIN_LINE);
+
+    snprintf(extra, sizeof(extra), "[pings: %d]", ping_count);
+    render_item(0, sel, "Run Reachability (ICMP)", extra);
+
+    snprintf(extra, sizeof(extra), "[streams: %d, %ds]", streams, duration);
+    render_item(1, sel, "Run Bandwidth (TCP)", extra);
+
+    snprintf(extra, sizeof(extra), "[%d test(s)]", test_count);
+    render_item(2, sel, "View Session History", extra);
+
+    render_item(3, sel, "Change Parameters", "");
+    render_item(4, sel, "Exit", "");
+
+    printf(THIN_LINE);
+    printf(A_DIM "  \xe2\x86\x91/\xe2\x86\x93 navigate   ENTER select   Q quit\n"
+           A_RESET);
+    fflush(stdout);
 }
 
 /* ------------------------------------------------------------------ */
-/* State: tabulate session history                                     */
+/* Settings                                                            */
+/* ------------------------------------------------------------------ */
+static void render_settings(int sel, int streams, int duration, int ping_count)
+{
+    char extra[24];
+
+    printf(A_CLEAR);
+    printf(A_BOLD SEP_LINE A_RESET);
+    printf(A_BOLD "  Change Parameters\n" A_RESET);
+    printf(THIN_LINE);
+
+    snprintf(extra, sizeof(extra), "(current: %d)", streams);
+    render_item(0, sel, "TCP Streams", extra);
+
+    snprintf(extra, sizeof(extra), "(current: %d s)", duration);
+    render_item(1, sel, "TCP Duration", extra);
+
+    snprintf(extra, sizeof(extra), "(current: %d)", ping_count);
+    render_item(2, sel, "ICMP Ping Count", extra);
+
+    render_item(3, sel, "Back", "");
+
+    printf(THIN_LINE);
+    printf(A_DIM "  \xe2\x86\x91/\xe2\x86\x93 navigate   ENTER edit/select   ESC back\n"
+           A_RESET);
+    fflush(stdout);
+}
+
+/* ------------------------------------------------------------------ */
+/* Running indicator (shown synchronously before blocking test call)   */
+/* ------------------------------------------------------------------ */
+static void render_running(const char *type, const char *target)
+{
+    printf(A_CLEAR);
+    printf(A_BOLD SEP_LINE A_RESET);
+    printf(A_BOLD "  Running %s test\n" A_RESET, type);
+    printf(THIN_LINE);
+    printf("  Target:  " A_CYAN "%s" A_RESET "\n", target);
+    printf("  Status:  Please wait...\n");
+    printf(THIN_LINE);
+    fflush(stdout);
+}
+
+/* ------------------------------------------------------------------ */
+/* ICMP results                                                        */
+/* ------------------------------------------------------------------ */
+static void render_icmp_results(const struct icmp_stats *s, int rc)
+{
+    printf(A_CLEAR);
+    printf(A_BOLD SEP_LINE A_RESET);
+    printf(A_BOLD "  ICMP Reachability Results\n" A_RESET);
+    printf(THIN_LINE);
+
+    if (rc == 0) {
+        printf("  Avg RTT:     " A_BOLD "%.2f ms\n"  A_RESET, s->avg_latency_ms);
+        printf("  Packet loss: " A_BOLD "%.1f%%\n"   A_RESET, s->packet_loss_pct);
+    } else {
+        printf("  " A_YELLOW "Target unreachable — all pings lost.\n" A_RESET);
+    }
+
+    printf(THIN_LINE);
+    printf(A_DIM "  Press any key to return...\n" A_RESET);
+    fflush(stdout);
+}
+
+/* ------------------------------------------------------------------ */
+/* Bandwidth results                                                   */
+/* ------------------------------------------------------------------ */
+static void render_bw_results(const struct run_client_result *r,
+                               int streams, int duration, int failed)
+{
+    printf(A_CLEAR);
+    printf(A_BOLD SEP_LINE A_RESET);
+    printf(A_BOLD "  Bandwidth Results\n" A_RESET);
+    printf(THIN_LINE);
+
+    if (failed) {
+        printf("  " A_YELLOW "Bandwidth test failed.\n" A_RESET);
+    } else {
+        printf("  Throughput:  " A_BOLD "%.3f Gbps\n" A_RESET, r->throughput_gbps);
+        printf("  Avg RTT:     " A_BOLD "%.2f ms\n"   A_RESET, r->avg_latency_ms);
+        printf("  Packet loss: " A_BOLD "%.1f%%\n"    A_RESET, r->packet_loss_pct);
+        printf("  Streams:     " A_BOLD "%d\n"        A_RESET, streams);
+        printf("  Duration:    " A_BOLD "%d s\n"      A_RESET, duration);
+    }
+
+    printf(THIN_LINE);
+    printf(A_DIM "  Press any key to return...\n" A_RESET);
+    fflush(stdout);
+}
+
+/* ------------------------------------------------------------------ */
+/* History — columns highlighted in yellow when the value changed      */
+/* relative to the previous row                                        */
 /* ------------------------------------------------------------------ */
 
-static void state_history(void)
+/* Print an integer column; apply yellow highlight when has_prev and value
+ * differs from prev_val. */
+static void hist_int(int cur, int prev_val, int has_prev, const char *fmt)
 {
-    print_sep();
-    printf("  Session History\n");
-    print_sep();
+    int changed = has_prev && (prev_val != cur);
+    if (changed)
+        printf(A_YELLOW);
+    printf(fmt, cur);
+    if (changed)
+        printf(A_RESET);
+}
 
-    if (log_size == 0) {
+/* Same as hist_int but for double. */
+static void hist_dbl(double cur, double prev_val, int has_prev,
+                      const char *fmt)
+{
+    int changed = has_prev && (prev_val != cur);
+    if (changed)
+        printf(A_YELLOW);
+    printf(fmt, cur);
+    if (changed)
+        printf(A_RESET);
+}
+
+static void render_history(void)
+{
+    printf(A_CLEAR);
+    printf(A_BOLD SEP_LINE A_RESET);
+    printf(A_BOLD "  Session History\n" A_RESET);
+    printf(THIN_LINE);
+
+    if (test_count == 0) {
         printf("  No tests recorded yet.\n");
     } else {
-        printf("  %-3s  %-19s  %-8s  %-10s  %-13s  %s\n",
-               "#", "Timestamp", "Streams", "Duration", "Throughput", "RTT");
-        printf("  %-3s  %-19s  %-8s  %-10s  %-13s  %s\n",
-               "---", "-------------------", "-------",
-               "---------", "------------", "------");
-        for (size_t i = 0; i < log_size; i++) {
-            const SessionEntry *e = &history_log[i];
-            if (e->is_icmp_only) {
-                printf("  %-3zu  %-19s  %-8s  %-10s  %-13s  %.2f ms\n",
-                       i + 1, e->timestamp, "ICMP", "-", "-", e->rtt_ms);
+        printf(A_BOLD "  %-3s  %-19s  %-5s  %-7s  %-4s  %-11s  %s\n" A_RESET,
+               "#", "Timestamp", "Type", "Streams", "Dur",
+               "Throughput", "Latency");
+        printf(THIN_LINE);
+
+        for (int i = 0; i < test_count; i++) {
+            const TestResult *c = &session_history[i];
+            const TestResult *p = (i > 0) ? &session_history[i - 1] : NULL;
+
+            int is_tcp   = (strcmp(c->test_type, "TCP") == 0);
+            int prev_tcp = p && (strcmp(p->test_type, "TCP") == 0);
+
+            printf("  %-3d  %-19s  %-5s  ",
+                   i + 1, c->timestamp, c->test_type);
+
+            if (is_tcp) {
+                /* Streams: highlight if previous row was also TCP and
+                 * the value changed. */
+                hist_int(c->streams,
+                         p ? p->streams : 0,
+                         p && prev_tcp,
+                         "%-7d");
+                printf("  ");
+
+                hist_int(c->duration,
+                         p ? p->duration : 0,
+                         p && prev_tcp,
+                         "%-4d");
+                printf("  ");
+
+                hist_dbl(c->throughput,
+                         p ? p->throughput : 0.0,
+                         p && prev_tcp,
+                         "%-8.3f Gbps");
+                printf("  ");
             } else {
-                printf("  %-3zu  %-19s  %-8u  %-9us  %-10.2f Gbps  %.2f ms\n",
-                       i + 1, e->timestamp,
-                       e->streams, e->duration_sec,
-                       e->throughput_gbps, e->rtt_ms);
+                printf("%-7s  %-4s  %-11s  ", "-", "-", "-");
             }
+
+            /* Latency: highlight if changed from any previous test type. */
+            hist_dbl(c->latency,
+                     p ? p->latency : 0.0,
+                     p != NULL,
+                     "%.2f ms");
+            printf("\n");
         }
     }
 
-    print_sep();
-    printf("  Press ENTER to return...");
+    printf(THIN_LINE);
+    printf(A_DIM "  Press any key to return...\n" A_RESET);
     fflush(stdout);
-    flush_input();
 }
 
-/* ------------------------------------------------------------------ */
-/* State: change parameters sub-menu                                   */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/* Application context                                                 */
+/* ================================================================== */
+typedef struct {
+    AppState state;
+    int      sel;            /* cursor position in the active menu  */
+    int      streams;
+    int      duration;
+    int      ping_count;
+    TestType test_type;      /* test queued for STATE_RUNNING_TEST  */
+    /* last ICMP result */
+    struct icmp_stats        last_icmp;
+    int                      last_icmp_rc;
+    /* last TCP result */
+    struct run_client_result last_bw;
+    int                      last_bw_streams;
+    int                      last_bw_duration;
+    int                      last_bw_failed;
+    /* server info */
+    const char *target_ip;
+    int         port;
+    char        server_str[64];
+} AppCtx;
 
-static void state_change_params(int *streams, int *duration, int *ping_count)
+/* ================================================================== */
+/* execute_test — run the queued test and append to history            */
+/* ================================================================== */
+static void execute_test(AppCtx *ctx)
 {
-    int choice;
-    do {
-        print_params_menu(*streams, *duration, *ping_count);
-        if (scanf("%d", &choice) != 1) {
-            flush_input();
-            continue;
-        }
-        flush_input();
+    if (ctx->test_type == TEST_ICMP) {
+        render_running("ICMP Reachability", ctx->target_ip);
 
-        int val;
-        switch (choice) {
-        case 1:
-            printf("  New stream count (1-%d): ", DSS_MAX_STREAMS);
-            fflush(stdout);
-            if (scanf("%d", &val) == 1 && val >= 1 && val <= DSS_MAX_STREAMS)
-                *streams = val;
-            else
-                printf("  Invalid value — unchanged.\n");
-            flush_input();
-            break;
-        case 2:
-            printf("  New duration (1-3600 s): ");
-            fflush(stdout);
-            if (scanf("%d", &val) == 1 && val >= 1 && val <= 3600)
-                *duration = val;
-            else
-                printf("  Invalid value — unchanged.\n");
-            flush_input();
-            break;
-        case 3:
-            printf("  New ICMP ping count (1-100): ");
-            fflush(stdout);
-            if (scanf("%d", &val) == 1 && val >= 1 && val <= 100)
-                *ping_count = val;
-            else
-                printf("  Invalid value — unchanged.\n");
-            flush_input();
-            break;
-        case 4:
-            break;
-        default:
-            printf("  Invalid choice — enter 1-4.\n");
-        }
-    } while (choice != 4);
+        struct icmp_stats s = {0};
+        int rc = icmp_ping(ctx->target_ip, ctx->ping_count, &s);
+        ctx->last_icmp    = s;
+        ctx->last_icmp_rc = rc;
+
+        TestResult r;
+        strncpy(r.test_type, "ICMP", sizeof(r.test_type));
+        r.test_type[sizeof(r.test_type) - 1] = '\0';
+        r.streams    = 0;
+        r.duration   = 0;
+        r.throughput = 0.0;
+        r.latency    = (rc == 0) ? s.avg_latency_ms : -1.0;
+        get_timestamp(r.timestamp, sizeof(r.timestamp));
+        history_append(&r);
+
+    } else {
+        render_running("TCP Bandwidth", ctx->target_ip);
+
+        struct client_args args = {
+            .target_ip     = ctx->target_ip,
+            .port          = ctx->port,
+            .ping_count    = ctx->ping_count,
+            .duration      = ctx->duration,
+            .streams       = ctx->streams,
+            .json_output   = 0,
+            .output_path   = NULL,
+            .dss_mode      = 0,
+            .dss_window_ms = DSS_WINDOW_MS,
+        };
+
+        struct run_client_result bw = {0};
+        int rc = run_client_ex(&args, &bw);
+
+        ctx->last_bw_streams  = ctx->streams;
+        ctx->last_bw_duration = ctx->duration;
+        ctx->last_bw_failed   = (rc != 0);
+        ctx->last_bw          = bw;
+
+        TestResult r;
+        strncpy(r.test_type, "TCP", sizeof(r.test_type));
+        r.test_type[sizeof(r.test_type) - 1] = '\0';
+        r.streams    = ctx->streams;
+        r.duration   = ctx->duration;
+        r.throughput = (rc == 0) ? bw.throughput_gbps : -1.0;
+        r.latency    = (rc == 0) ? bw.avg_latency_ms  : -1.0;
+        get_timestamp(r.timestamp, sizeof(r.timestamp));
+        history_append(&r);
+    }
 }
 
-/* ------------------------------------------------------------------ */
-/* Entry point                                                         */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/* update_logic — state transitions and selection updates              */
+/* ================================================================== */
+static void update_logic(AppCtx *ctx, int key)
+{
+    switch (ctx->state) {
 
+    /* ---- MAIN MENU ---- */
+    case STATE_MAIN_MENU:
+        if (key == KEY_UP)
+            ctx->sel = UI_WRAP(ctx->sel - 1, MENU_ITEMS);
+        else if (key == KEY_DOWN)
+            ctx->sel = UI_WRAP(ctx->sel + 1, MENU_ITEMS);
+        else if (key == KEY_ENTER) {
+            switch (ctx->sel) {
+            case 0: ctx->test_type = TEST_ICMP; ctx->state = STATE_RUNNING_TEST; break;
+            case 1: ctx->test_type = TEST_TCP;  ctx->state = STATE_RUNNING_TEST; break;
+            case 2: ctx->state = STATE_VIEW_HISTORY; break;
+            case 3: ctx->state = STATE_SETTINGS; ctx->sel = 0; break;
+            case 4: ctx->state = STATE_EXIT; break;
+            }
+        } else if (key == KEY_QUIT || key == KEY_ESC) {
+            ctx->state = STATE_EXIT;
+        }
+        break;
+
+    /* ---- SETTINGS ---- */
+    case STATE_SETTINGS:
+        if (key == KEY_UP)
+            ctx->sel = UI_WRAP(ctx->sel - 1, SETTINGS_ITEMS);
+        else if (key == KEY_DOWN)
+            ctx->sel = UI_WRAP(ctx->sel + 1, SETTINGS_ITEMS);
+        else if (key == KEY_ENTER) {
+            switch (ctx->sel) {
+            case 0:
+                ctx->streams = read_int_field("TCP streams",
+                                              1, DSS_MAX_STREAMS,
+                                              ctx->streams);
+                break;
+            case 1:
+                ctx->duration = read_int_field("TCP duration (s)",
+                                               1, 3600,
+                                               ctx->duration);
+                break;
+            case 2:
+                ctx->ping_count = read_int_field("ICMP ping count",
+                                                 1, 100,
+                                                 ctx->ping_count);
+                break;
+            case 3:
+                /* Back — return cursor to "Change Parameters" in main menu. */
+                ctx->state = STATE_MAIN_MENU;
+                ctx->sel   = 3;
+                break;
+            }
+        } else if (key == KEY_ESC || key == KEY_QUIT) {
+            ctx->state = STATE_MAIN_MENU;
+            ctx->sel   = 3;
+        }
+        break;
+
+    /* ---- VIEW_RESULTS / VIEW_HISTORY: any key returns to main ---- */
+    default:
+        ctx->state = STATE_MAIN_MENU;
+        ctx->sel   = 0;
+        break;
+    }
+}
+
+/* ================================================================== */
+/* render_current_screen                                               */
+/* ================================================================== */
+static void render_current_screen(const AppCtx *ctx)
+{
+    switch (ctx->state) {
+    case STATE_MAIN_MENU:
+        render_main_menu(ctx->sel, ctx->streams, ctx->duration,
+                         ctx->ping_count, ctx->server_str);
+        break;
+    case STATE_VIEW_RESULTS:
+        if (ctx->test_type == TEST_ICMP)
+            render_icmp_results(&ctx->last_icmp, ctx->last_icmp_rc);
+        else
+            render_bw_results(&ctx->last_bw,
+                               ctx->last_bw_streams,
+                               ctx->last_bw_duration,
+                               ctx->last_bw_failed);
+        break;
+    case STATE_VIEW_HISTORY:
+        render_history();
+        break;
+    case STATE_SETTINGS:
+        render_settings(ctx->sel, ctx->streams, ctx->duration,
+                        ctx->ping_count);
+        break;
+    default:
+        break;
+    }
+}
+
+/* ================================================================== */
+/* interactive_main                                                    */
+/* ================================================================== */
 int interactive_main(const char *target_ip, int port, int ping_count)
 {
-    int streams  = DEFAULT_STREAMS;
-    int duration = DEFAULT_DURATION;
-
-    if (history_init() != 0) {
-        fprintf(stderr, "interactive: out of memory\n");
+    if (!isatty(STDIN_FILENO)) {
+        fprintf(stderr,
+                "spdchk: interactive mode requires an interactive terminal.\n");
         return -1;
     }
 
-    printf("\nWelcome to spdchk %s — Interactive Mode\n", SPDCHK_VERSION);
-    printf("Server: %s:%d\n\n", target_ip, port);
-
-    int running = 1;
-    while (running) {
-        print_main_menu(streams, duration, ping_count);
-
-        int choice;
-        if (scanf("%d", &choice) != 1) {
-            flush_input();
-            printf("\n");
-            continue;
-        }
-        flush_input();
-        printf("\n");
-
-        switch (choice) {
-
-        /* -------------------------------------------------------- */
-        /* 1. ICMP Reachability                                      */
-        /* -------------------------------------------------------- */
-        case 1: {
-            printf("  Running ICMP ping to %s (%d pings)...\n",
-                   target_ip, ping_count);
-            struct icmp_stats s = { 0 };
-            int rc = icmp_ping(target_ip, ping_count, &s);
-            state_results_icmp(&s, rc);
-
-            SessionEntry e = {
-                .streams         = 0,
-                .duration_sec    = 0,
-                .throughput_gbps = 0.0,
-                .rtt_ms          = (rc == 0) ? s.avg_latency_ms : -1.0,
-                .is_icmp_only    = 1,
-            };
-            get_timestamp(e.timestamp, sizeof(e.timestamp));
-            history_append(&e);
-
-            printf("  Press ENTER to continue...");
-            fflush(stdout);
-            flush_input();
-            break;
-        }
-
-        /* -------------------------------------------------------- */
-        /* 2. TCP Bandwidth                                          */
-        /* -------------------------------------------------------- */
-        case 2: {
-            printf("  Running bandwidth test to %s (%d streams, %d s)...\n",
-                   target_ip, streams, duration);
-
-            struct client_args args = {
-                .target_ip     = target_ip,
-                .port          = port,
-                .ping_count    = ping_count,
-                .duration      = duration,
-                .streams       = streams,
-                .json_output   = 0,
-                .output_path   = NULL,
-                .dss_mode      = 0,
-                .dss_window_ms = DSS_WINDOW_MS,
-            };
-
-            struct run_client_result result = { 0 };
-            int rc = run_client_ex(&args, &result);
-
-            if (rc == 0) {
-                state_results_bw(&result, streams, duration);
-
-                SessionEntry e = {
-                    .streams         = (uint32_t)streams,
-                    .duration_sec    = (uint32_t)duration,
-                    .throughput_gbps = result.throughput_gbps,
-                    .rtt_ms          = result.avg_latency_ms,
-                    .is_icmp_only    = 0,
-                };
-                get_timestamp(e.timestamp, sizeof(e.timestamp));
-                history_append(&e);
-            } else {
-                printf("  ERROR: bandwidth test failed.\n");
-            }
-
-            printf("  Press ENTER to continue...");
-            fflush(stdout);
-            flush_input();
-            break;
-        }
-
-        /* -------------------------------------------------------- */
-        /* 3. View Session History                                   */
-        /* -------------------------------------------------------- */
-        case 3:
-            state_history();
-            break;
-
-        /* -------------------------------------------------------- */
-        /* 4. Change Parameters                                      */
-        /* -------------------------------------------------------- */
-        case 4:
-            state_change_params(&streams, &duration, &ping_count);
-            break;
-
-        /* -------------------------------------------------------- */
-        /* 5. Exit                                                   */
-        /* -------------------------------------------------------- */
-        case 5:
-            running = 0;
-            break;
-
-        default:
-            printf("  Invalid choice — enter 1-5.\n");
-        }
-
-        printf("\n");
+    if (history_init() != 0) {
+        fprintf(stderr, "spdchk: interactive: out of memory\n");
+        return -1;
     }
 
-    printf("Exiting interactive mode. Session history discarded.\n");
+    signal(SIGINT,  sig_cleanup);
+    signal(SIGTERM, sig_cleanup);
+
+    AppCtx ctx = {
+        .state            = STATE_MAIN_MENU,
+        .sel              = 0,
+        .streams          = DEFAULT_STREAMS,
+        .duration         = DEFAULT_DURATION,
+        .ping_count       = ping_count,
+        .target_ip        = target_ip,
+        .port             = port,
+        .last_icmp_rc     = -1,
+        .last_bw_streams  = 0,
+        .last_bw_duration = 0,
+        .last_bw_failed   = 1,
+    };
+    snprintf(ctx.server_str, sizeof(ctx.server_str), "%s:%d", target_ip, port);
+
+    setup_terminal_raw_mode();
+
+    while (ctx.state != STATE_EXIT) {
+        /* Execute any queued test (renders its own "running" screen). */
+        if (ctx.state == STATE_RUNNING_TEST) {
+            execute_test(&ctx);
+            ctx.state = STATE_VIEW_RESULTS;
+        }
+
+        render_current_screen(&ctx);
+
+        /* VIEW_RESULTS and VIEW_HISTORY: consume one keystroke then return. */
+        if (ctx.state == STATE_VIEW_RESULTS
+                || ctx.state == STATE_VIEW_HISTORY) {
+            capture_input();
+            ctx.state = STATE_MAIN_MENU;
+            ctx.sel   = 0;
+            continue;
+        }
+
+        int key = capture_input();
+        update_logic(&ctx, key);
+    }
+
+    restore_terminal_mode();
+    printf(A_CLEAR);
+    printf("Exiting spdchk interactive mode. Session history discarded.\n");
     history_free();
     return 0;
 }
