@@ -1,0 +1,57 @@
+name: Build & Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute version tag
+        id: version
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          DATE="$(date -u +'%Y%m%d')"
+          echo "tag=v${DATE}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "name=Release ${DATE} (${SHORT_SHA})" >> "$GITHUB_OUTPUT"
+
+      - name: Install ARM64 cross-compiler
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu
+
+      - name: Build — linux/amd64
+        run: |
+          make clean
+          make
+          mv spdchk spdchk-linux-amd64
+
+      - name: Build — linux/arm64
+        run: |
+          make clean
+          make CC=aarch64-linux-gnu-gcc
+          mv spdchk spdchk-linux-arm64
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.name }}
+          body: |
+            Automated release from commit ${{ github.sha }}.
+
+            | Asset | Architecture |
+            |-------|-------------|
+            | `spdchk-linux-amd64` | Linux x86-64 (Intel/AMD) |
+            | `spdchk-linux-arm64` | Linux AArch64 (ARM 64-bit) |
+          files: |
+            spdchk-linux-amd64
+            spdchk-linux-arm64
