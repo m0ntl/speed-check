@@ -46,8 +46,8 @@ Current version: **0.6.0** (defined in `spdchk.h`).
 | `metrics.c` | Computes and formats results: `print_metrics()` (loss %, min/avg/max RTT, jitter), `print_bandwidth()` (throughput in Gbps), and `print_results_json()` (full JSON report with timestamp, ping stats, and bandwidth stats) |
 | `logger.h` | Declares the four-level log system (`ERROR`/`INFO`/`DEBUG`/`TRACE`), `logger_init()`, `logger_close()`, and the `log_error` / `log_info` / `log_debug` / `log_trace` convenience macros |
 | `logger.c` | Thread-safe dual-output logger: writes to both syslog (`LOG_DAEMON` facility) and stdout/stderr; TRACE messages are rate-limited to 1 000 calls/s to prevent disk exhaustion |
-| `interactive.h` | Declares `SessionEntry` (per-run result record) and `interactive_main()` |
-| `interactive.c` | Full interactive client mode: renders a text menu, runs ICMP/TCP tests via existing modules, stores results in a volatile in-memory `SessionEntry` array, allows parameter changes between runs, and displays a side-by-side history table |
+| `interactive.h` | Declares `interactive_main()` (all implementation types are internal to `interactive.c`) |
+| `interactive.c` | Full interactive client mode using `termios` raw mode and ANSI escape codes (no ncurses). Implements a state machine (`AppState` enum: MAIN_MENU, RUNNING_TEST, VIEW_RESULTS, VIEW_HISTORY, SETTINGS, EXIT), arrow-key navigation via 3-byte CSI escape-sequence parsing, ANSI-rendered menus with inverted highlight on the selected item, parameter editing that temporarily restores canonical mode, and a session history table that prints changed columns in yellow for easy delta comparison |
 | `Makefile` | Build rules for the `spdchk` binary |
 
 ---
