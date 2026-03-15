@@ -9,7 +9,7 @@
 
 Both modes are compiled into a single binary toggled by CLI flags (`-s` server, `-c <IP>` client). The binary requires `CAP_NET_RAW` (or `sudo`) for the raw ICMP socket.
 
-Current version: **0.5.0** (defined in `spdchk.h`).
+Current version: **0.6.0** (defined in `spdchk.h`).
 
 ### CLI Flags
 
@@ -26,6 +26,7 @@ Current version: **0.5.0** (defined in `spdchk.h`).
 | `-w <ms>` | DSS sampling window in milliseconds (default: 500) |
 | `-j` | Emit JSON output |
 | `-o <file>` | Write statistics to a file instead of stdout |
+| `-I, --interactive` | Launch interactive client mode (requires `-c`; server mode unsupported) |
 | `-v` | Increase log verbosity (cumulative: `-v`=INFO, `-vv`=DEBUG, `-vvv`=TRACE) |
 | `--log-level N` | Set log verbosity directly (0=ERROR 1=INFO 2=DEBUG 3=TRACE) |
 
@@ -35,8 +36,8 @@ Current version: **0.5.0** (defined in `spdchk.h`).
 |---|---|
 | `spdchk.h` | Shared constants (`DEFAULT_PORT`, `DEFAULT_COUNT`, `DEFAULT_DURATION`, `DEFAULT_STREAMS`, DSS parameters), `SPDCHK_VERSION` macro, and the packed `spdchk_payload` wire struct (seq number, departure timestamp, optional padding) |
 | `main.c` | Entry point — full CLI argument parsing (`getopt_long`), input validation, logger initialisation, and dispatch to `run_server()` or `run_client()` |
-| `client.h` | Declares `struct client_args` (all test parameters) and `run_client()` |
-| `client.c` | Implements the two-phase test: ICMP multi-ping via `icmp_ping()`, version handshake with the server (including DSS capability flag), parallel TCP stream workers (`stream_worker` threads), Dynamic Stream Scaling loop, and final metrics output (plain text or JSON) |
+| `client.h` | Declares `struct client_args` (all test parameters), `struct run_client_result` (programmatic result data), `run_client()`, and `run_client_ex()` |
+| `client.c` | Implements the two-phase test: ICMP multi-ping via `icmp_ping()`, version handshake with the server (including DSS capability flag), parallel TCP stream workers (`stream_worker` threads), Dynamic Stream Scaling loop, and final metrics output (plain text or JSON); `run_client_ex()` additionally populates a `run_client_result` struct for callers that need the data programmatically |
 | `server.h` | Declares `run_server(port, max_duration)` |
 | `server.c` | Passive bandwidth sink — binds a TCP socket, accepts connections in per-thread handlers, performs the version handshake (accepts or rejects mismatched clients), drains incoming data, and enforces the optional `max_duration` receive timeout |
 | `icmp.h` | Declares `struct icmp_stats` (avg latency, packet-loss %) and `icmp_ping()` |
@@ -45,6 +46,8 @@ Current version: **0.5.0** (defined in `spdchk.h`).
 | `metrics.c` | Computes and formats results: `print_metrics()` (loss %, min/avg/max RTT, jitter), `print_bandwidth()` (throughput in Gbps), and `print_results_json()` (full JSON report with timestamp, ping stats, and bandwidth stats) |
 | `logger.h` | Declares the four-level log system (`ERROR`/`INFO`/`DEBUG`/`TRACE`), `logger_init()`, `logger_close()`, and the `log_error` / `log_info` / `log_debug` / `log_trace` convenience macros |
 | `logger.c` | Thread-safe dual-output logger: writes to both syslog (`LOG_DAEMON` facility) and stdout/stderr; TRACE messages are rate-limited to 1 000 calls/s to prevent disk exhaustion |
+| `interactive.h` | Declares `SessionEntry` (per-run result record) and `interactive_main()` |
+| `interactive.c` | Full interactive client mode: renders a text menu, runs ICMP/TCP tests via existing modules, stores results in a volatile in-memory `SessionEntry` array, allows parameter changes between runs, and displays a side-by-side history table |
 | `Makefile` | Build rules for the `spdchk` binary |
 
 ---
