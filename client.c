@@ -15,6 +15,7 @@
 #include "icmp.h"
 #include "logger.h"
 #include "metrics.h"
+#include "telemetry.h"
 
 static int connect_timed(int fd, const struct sockaddr *addr, socklen_t len, int timeout_ms);
 #include "spdchk.h"
@@ -24,6 +25,9 @@ static int connect_timed(int fd, const struct sockaddr *addr, socklen_t len, int
 
 /* Shared stop signal — set to 1 by main thread after the test duration. */
 static volatile int g_stop = 0;
+
+/* Active telemetry session; NULL when not in a bandwidth test. */
+static spdchk_telemetry_t *g_telemetry = NULL;
 
 /* One-shot TCP connection that exchanges version strings with the server.
  * When dss_mode is non-zero the greeting includes a DSS capability flag. */
@@ -185,6 +189,10 @@ static void *stream_worker(void *arg)
         if (n <= 0)
             break;
         __atomic_fetch_add(&ctx->bytes_sent, (long long)n, __ATOMIC_RELAXED);
+        /* Report bytes to the live telemetry display (SDD §4.2). */
+        if (g_telemetry)
+            atomic_fetch_add_explicit(&g_telemetry->total_bytes,
+                                      (int64_t)n, memory_order_relaxed);
     }
 
     free(buf);
@@ -234,6 +242,8 @@ static int run_bandwidth_dss(const struct client_args *args,
         return -1;
     }
     n++;
+    if (g_telemetry)
+        g_telemetry->parallel_streams = n;
     log_info("CLIENT", "DSS: started stream 1 (window=%d ms, threshold=%.0f%%, cap=%d)",
              args->dss_window_ms, DSS_THRESHOLD * 100.0, DSS_MAX_STREAMS);
 
@@ -275,6 +285,8 @@ static int run_bandwidth_dss(const struct client_args *args,
                     if (spawn_stream(&ctxs[n], &tids[n], n,
                                      args->target_ip, args->port) == 0) {
                         n++;
+                        if (g_telemetry)
+                            g_telemetry->parallel_streams = n;
                         log_debug("CLIENT", "DSS: %.1f Mbps → adding stream %d",
                                   bw / 1.0e6, n);
                     } else {
@@ -358,13 +370,27 @@ int run_client_ex(const struct client_args *args, struct run_client_result *resu
     /* ------------------------------------------------------------------ */
     struct bandwidth_result bw = { 0 };
 
+    /* Start live telemetry display (SDD §4.1).  Silent no-op when stdout
+     * is not a TTY; always call telemetry_stop() in every code path. */
+    spdchk_telemetry_t tel = {
+        .total_duration   = args->duration,
+        .parallel_streams = args->dss_mode ? 1 : args->streams,
+        .avg_latency_ms   = icmp_result.avg_latency_ms,
+    };
+    pthread_t tel_tid;
+    g_telemetry = &tel;
+    telemetry_start(&tel, &tel_tid);
+
     if (args->dss_mode) {
         log_info("CLIENT",
                  "Phase 2 — bandwidth test: Dynamic Stream Scaling, %d s → %s:%d",
                  args->duration, args->target_ip, args->port);
 
-        if (run_bandwidth_dss(args, &bw) != 0)
+        if (run_bandwidth_dss(args, &bw) != 0) {
+            g_telemetry = NULL;
+            telemetry_stop(&tel, &tel_tid);
             return -1;
+        }
     } else {
         log_info("CLIENT", "Phase 2 — bandwidth test: %d stream(s), %d s → %s:%d",
                  args->streams, args->duration, args->target_ip, args->port);
@@ -375,6 +401,8 @@ int run_client_ex(const struct client_args *args, struct run_client_result *resu
             log_error("CLIENT", "calloc: %s", strerror(errno));
             free(ctxs);
             free(tids);
+            g_telemetry = NULL;
+            telemetry_stop(&tel, &tel_tid);
             return -1;
         }
 
@@ -393,6 +421,8 @@ int run_client_ex(const struct client_args *args, struct run_client_result *resu
                     pthread_join(tids[j], NULL);
                 free(ctxs);
                 free(tids);
+                g_telemetry = NULL;
+                telemetry_stop(&tel, &tel_tid);
                 return -1;
             }
         }
@@ -416,6 +446,8 @@ int run_client_ex(const struct client_args *args, struct run_client_result *resu
 
         if (ok_streams == 0) {
             log_error("CLIENT", "all streams failed to connect");
+            g_telemetry = NULL;
+            telemetry_stop(&tel, &tel_tid);
             return -1;
         }
 
@@ -425,6 +457,10 @@ int run_client_ex(const struct client_args *args, struct run_client_result *resu
         bw.parallel_streams = args->streams;
         bw.optimal_streams  = 0;
     }
+
+    /* Stop the live display before printing the final statistics block. */
+    g_telemetry = NULL;
+    telemetry_stop(&tel, &tel_tid);
 
     struct ping_result ping = {
         .avg_latency_ms  = icmp_result.avg_latency_ms,
