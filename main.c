@@ -31,18 +31,20 @@ static void usage(const char *prog)
 
 int main(int argc, char *argv[])
 {
-    int   mode_server = 0;
-    char *target_ip   = NULL;
-    int   port        = DEFAULT_PORT;
-    int   ping_count  = DEFAULT_COUNT;
-    int   duration    = DEFAULT_DURATION;
-    int   streams     = DEFAULT_STREAMS;
-    int   max_dur     = 0;
-    int   json_output = 0;
-    char *output_path = NULL;
+    int   mode_server  = 0;
+    char *target_ip    = NULL;
+    int   port         = DEFAULT_PORT;
+    int   ping_count   = DEFAULT_COUNT;
+    int   duration     = DEFAULT_DURATION;
+    int   streams      = DEFAULT_STREAMS;
+    int   max_dur      = 0;
+    int   json_output  = 0;
+    char *output_path  = NULL;
+    int   dss_mode     = 0;
+    int   dss_window   = DSS_WINDOW_MS;
     int   opt;
 
-    while ((opt = getopt(argc, argv, "sc:p:i:d:n:m:jo:")) != -1) {
+    while ((opt = getopt(argc, argv, "sc:p:i:d:n:m:jDw:o:")) != -1) {
         switch (opt) {
         case 's':
             mode_server = 1;
@@ -89,6 +91,17 @@ int main(int argc, char *argv[])
         case 'j':
             json_output = 1;
             break;
+        case 'D':
+            dss_mode = 1;
+            break;
+        case 'w':
+            dss_window = atoi(optarg);
+            if (dss_window <= 0) {
+                fprintf(stderr, "Error: invalid DSS window '%s' (must be > 0 ms).\n",
+                        optarg);
+                return EXIT_FAILURE;
+            }
+            break;
         case 'o':
             output_path = optarg;
             break;
@@ -114,13 +127,15 @@ int main(int argc, char *argv[])
         return run_server(port, max_dur) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 
     struct client_args args = {
-        .target_ip   = target_ip,
-        .port        = port,
-        .ping_count  = ping_count,
-        .duration    = duration,
-        .streams     = streams,
-        .json_output = json_output,
-        .output_path = output_path,
+        .target_ip    = target_ip,
+        .port         = port,
+        .ping_count   = ping_count,
+        .duration     = duration,
+        .streams      = streams,
+        .json_output  = json_output,
+        .output_path  = output_path,
+        .dss_mode     = dss_mode,
+        .dss_window_ms= dss_window,
     };
     return run_client(&args) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

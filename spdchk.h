@@ -18,12 +18,17 @@
  * The CI/CD pipeline reads this value to name every release automatically.
  * Bump it here before merging the commit that should carry the new version.
  */
-#define SPDCHK_VERSION "0.3.1"
+#define SPDCHK_VERSION "0.4.0"
 
-#define DEFAULT_PORT     2200
-#define DEFAULT_COUNT    4   /* ICMP pings per test (spec §3.2)       */
-#define DEFAULT_DURATION 10  /* bandwidth-test duration in seconds     */
-#define DEFAULT_STREAMS  4   /* parallel TCP streams for bandwidth test */
+#define DEFAULT_PORT       2200
+#define DEFAULT_COUNT      4    /* ICMP pings per test (spec §3.2)       */
+#define DEFAULT_DURATION   10   /* bandwidth-test duration in seconds     */
+#define DEFAULT_STREAMS    4    /* parallel TCP streams for bandwidth test */
+
+/* Dynamic Stream Scaling (DSS) parameters */
+#define DSS_WINDOW_MS      500  /* sampling window in milliseconds        */
+#define DSS_THRESHOLD      0.05 /* minimum Δ to continue scaling (5 %)   */
+#define DSS_MAX_STREAMS    32   /* hard cap — prevents socket exhaustion  */
 
 /*
  * spdchk_payload — packed measurement frame sent over TCP.

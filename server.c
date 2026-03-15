@@ -57,11 +57,26 @@ static void *handle_connection(void *arg)
         line[li] = '\0';
 
         const char *cv = line + 11;   /* skip "SPDCHK_VER " */
-        char *nl = strchr(cv, '\n');
-        if (nl) *nl = '\0';
 
-        if (strcmp(cv, SPDCHK_VERSION) == 0) {
+        /* Strip optional capability flags (e.g. " DSS") that follow the
+         * version token so the strcmp only compares the version string. */
+        char ver_buf[32];
+        strncpy(ver_buf, cv, sizeof(ver_buf) - 1);
+        ver_buf[sizeof(ver_buf) - 1] = '\0';
+        int dss_flag = 0;
+        char *sp = strchr(ver_buf, ' ');
+        char *nl = strchr(ver_buf, '\n');
+        if (nl) *nl = '\0';
+        if (sp) {
+            dss_flag = (strstr(sp + 1, "DSS") != NULL);
+            *sp = '\0';
+        }
+
+        if (strcmp(ver_buf, SPDCHK_VERSION) == 0) {
             send(fd, "OK\n", 3, MSG_NOSIGNAL);
+            if (dss_flag)
+                printf("[SERVER] Client %s: Dynamic Stream Scaling enabled.\n",
+                       addr_str);
         } else {
             char resp[64];
             int  rlen = snprintf(resp, sizeof(resp),
@@ -69,7 +84,7 @@ static void *handle_connection(void *arg)
             send(fd, resp, (size_t)rlen, MSG_NOSIGNAL);
             printf("[SERVER] Rejected %s: version mismatch "
                    "(client=%s server=%s).\n",
-                   addr_str, cv, SPDCHK_VERSION);
+                   addr_str, ver_buf, SPDCHK_VERSION);
         }
         close(fd);
         return NULL;

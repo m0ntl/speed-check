@@ -12,6 +12,8 @@ struct client_args {
     int         streams;      /* parallel TCP streams        (default 4)  */
     int         json_output;  /* 1 = emit JSON, 0 = plain text            */
     const char *output_path;  /* write statistics here; NULL = stdout     */
+    int         dss_mode;     /* 1 = Dynamic Stream Scaling; 0 = static   */
+    int         dss_window_ms;/* DSS sampling window in ms  (default 500) */
 };
 
 /*

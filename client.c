@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -23,8 +24,9 @@ static int connect_timed(int fd, const struct sockaddr *addr, socklen_t len, int
 /* Shared stop signal — set to 1 by main thread after the test duration. */
 static volatile int g_stop = 0;
 
-/* One-shot TCP connection that exchanges version strings with the server. */
-static int check_server_version(const char *target_ip, int port)
+/* One-shot TCP connection that exchanges version strings with the server.
+ * When dss_mode is non-zero the greeting includes a DSS capability flag. */
+static int check_server_version(const char *target_ip, int port, int dss_mode)
 {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
@@ -51,8 +53,14 @@ static int check_server_version(const char *target_ip, int port)
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     /* Send greeting. */
-    const char greeting[] = "SPDCHK_VER " SPDCHK_VERSION "\n";
-    if (send(sock, greeting, sizeof(greeting) - 1, MSG_NOSIGNAL) < 0) {
+    char greeting[64];
+    if (dss_mode)
+        snprintf(greeting, sizeof(greeting),
+                 "SPDCHK_VER " SPDCHK_VERSION " DSS\n");
+    else
+        snprintf(greeting, sizeof(greeting),
+                 "SPDCHK_VER " SPDCHK_VERSION "\n");
+    if (send(sock, greeting, strlen(greeting), MSG_NOSIGNAL) < 0) {
         perror("[CLIENT] version-check: send");
         close(sock);
         return -1;
@@ -146,7 +154,7 @@ static void *stream_worker(void *arg)
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
         perror("client: socket");
-        ctx->bytes_sent = -1;
+        __atomic_store_n(&ctx->bytes_sent, (long long)-1, __ATOMIC_RELAXED);
         return NULL;
     }
 
@@ -161,30 +169,167 @@ static void *stream_worker(void *arg)
         fprintf(stderr, "[CLIENT] Stream %d: connect failed: %s\n",
                 ctx->stream_id, strerror(errno));
         close(sock);
-        ctx->bytes_sent = -1;
+        __atomic_store_n(&ctx->bytes_sent, (long long)-1, __ATOMIC_RELAXED);
         return NULL;
     }
 
     char *buf = malloc(SEND_BUF_SIZE);
     if (!buf) {
         close(sock);
-        ctx->bytes_sent = -1;
+        __atomic_store_n(&ctx->bytes_sent, (long long)-1, __ATOMIC_RELAXED);
         return NULL;
     }
     memset(buf, 0xAB, SEND_BUF_SIZE);
 
-    long long bytes = 0;
     while (!g_stop) {
         ssize_t n = send(sock, buf, SEND_BUF_SIZE, MSG_NOSIGNAL);
         if (n <= 0)
             break;
-        bytes += n;
+        __atomic_fetch_add(&ctx->bytes_sent, (long long)n, __ATOMIC_RELAXED);
     }
 
     free(buf);
     close(sock);
-    ctx->bytes_sent = bytes;
     return NULL;
+}
+
+/* ------------------------------------------------------------------ */
+/* Stream Manager helpers                                              */
+/* ------------------------------------------------------------------ */
+
+static int spawn_stream(struct stream_arg *ctx, pthread_t *tid,
+                        int idx, const char *ip, int port)
+{
+    ctx->target_ip  = ip;
+    ctx->port       = port;
+    ctx->stream_id  = idx + 1;
+    ctx->bytes_sent = 0;
+    return pthread_create(tid, NULL, stream_worker, ctx);
+}
+
+/* ------------------------------------------------------------------ */
+/* Throughput Monitor + Scaling Engine (DSS)                           */
+/* ------------------------------------------------------------------ */
+
+static int run_bandwidth_dss(const struct client_args *args,
+                             struct bandwidth_result  *out)
+{
+    struct stream_arg ctxs[DSS_MAX_STREAMS];
+    pthread_t         tids[DSS_MAX_STREAMS];
+    int               n = 0;
+
+    memset(ctxs, 0, sizeof(ctxs));
+    g_stop = 0;
+
+    /* Absolute test end time */
+    struct timespec t_end;
+    clock_gettime(CLOCK_MONOTONIC, &t_end);
+    t_end.tv_sec += args->duration;
+
+    long window_ns = (long)args->dss_window_ms * 1000000L;
+
+    /* Launch the first stream */
+    if (spawn_stream(&ctxs[n], &tids[n], n, args->target_ip, args->port) != 0) {
+        perror("[CLIENT] DSS: pthread_create");
+        g_stop = 1;
+        return -1;
+    }
+    n++;
+    printf("[CLIENT] DSS: started stream 1  "
+           "(window=%d ms, threshold=%.0f%%, cap=%d).\n",
+           args->dss_window_ms, DSS_THRESHOLD * 100.0, DSS_MAX_STREAMS);
+
+    long long prev_total = 0;
+    double    prev_bw    = 0.0;   /* bytes/s in last window              */
+    int       scaling    = 1;     /* 1 while still probing for more      */
+    int       optimal_n  = 1;     /* last stream count that beat the bar */
+
+    while (1) {
+        /* Sleep one sampling window */
+        struct timespec req = { .tv_sec  = 0, .tv_nsec = window_ns };
+        nanosleep(&req, NULL);
+
+        /* Has the test duration elapsed? */
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        int expired = (now.tv_sec  > t_end.tv_sec) ||
+                      (now.tv_sec == t_end.tv_sec &&
+                       now.tv_nsec >= t_end.tv_nsec);
+
+        /* Aggregate bytes across all active streams (Throughput Monitor) */
+        long long total = 0;
+        for (int i = 0; i < n; i++)
+            total += __atomic_load_n(&ctxs[i].bytes_sent, __ATOMIC_RELAXED);
+
+        double bw = (double)(total - prev_total)
+                  / ((double)args->dss_window_ms / 1000.0);
+        prev_total = total;
+
+        if (expired)
+            break;
+
+        if (scaling) {
+            /* Scaling Engine: gradient-ascent decision */
+            if (prev_bw == 0.0 || bw > prev_bw * (1.0 + DSS_THRESHOLD)) {
+                /* Improvement above threshold — current N is good */
+                optimal_n = n;
+                if (n < DSS_MAX_STREAMS) {
+                    if (spawn_stream(&ctxs[n], &tids[n], n,
+                                     args->target_ip, args->port) == 0) {
+                        n++;
+                        printf("[CLIENT] DSS: %.1f Mbps → adding stream %d\n",
+                               bw / 1.0e6, n);
+                    } else {
+                        perror("[CLIENT] DSS: pthread_create");
+                        scaling = 0;
+                    }
+                } else {
+                    printf("[CLIENT] DSS: safety cap (%d streams) reached.\n",
+                           DSS_MAX_STREAMS);
+                    scaling = 0;
+                }
+            } else {
+                /* Plateau detected — stop scaling */
+                double gain_pct = prev_bw > 0.0
+                                ? (bw - prev_bw) / prev_bw * 100.0
+                                : 0.0;
+                printf("[CLIENT] DSS: plateau at %d stream(s)  "
+                       "%.1f Mbps  gain %.1f%% < %.0f%% threshold.\n",
+                       n, bw / 1.0e6, gain_pct, DSS_THRESHOLD * 100.0);
+                scaling = 0;
+            }
+            prev_bw = bw;
+        }
+    }
+
+    /* Signal all streams to stop and collect results */
+    g_stop = 1;
+
+    long long total_bytes = 0;
+    int       ok          = 0;
+    for (int i = 0; i < n; i++) {
+        pthread_join(tids[i], NULL);
+        long long bs = __atomic_load_n(&ctxs[i].bytes_sent, __ATOMIC_RELAXED);
+        if (bs >= 0) {
+            total_bytes += bs;
+            ok++;
+        }
+    }
+
+    if (ok == 0) {
+        fprintf(stderr, "[CLIENT] DSS: all streams failed to connect.\n");
+        return -1;
+    }
+
+    printf("[CLIENT] DSS: steady state — %d optimal stream(s), "
+           "%d total active.\n", optimal_n, n);
+
+    out->throughput_gbps  = ((double)total_bytes * 8.0)
+                          / (double)args->duration / 1.0e9;
+    out->duration_sec     = args->duration;
+    out->parallel_streams = n;
+    out->optimal_streams  = optimal_n;
+    return 0;
 }
 
 int run_client(const struct client_args *args)
@@ -192,8 +337,9 @@ int run_client(const struct client_args *args)
     /* ------------------------------------------------------------------ */
     /* Phase 0: Version check                                              */
     /* ------------------------------------------------------------------ */
-    printf("[CLIENT] Phase 0 — version check (client %s)...\n", SPDCHK_VERSION);
-    if (check_server_version(args->target_ip, args->port) != 0)
+    printf("[CLIENT] Phase 0 \u2014 version check (client %s)%s...\n",
+           SPDCHK_VERSION, args->dss_mode ? " [DSS]" : "");
+    if (check_server_version(args->target_ip, args->port, args->dss_mode) != 0)
         return -1;
     printf("[CLIENT] Version OK.\n\n");
 
@@ -212,69 +358,79 @@ int run_client(const struct client_args *args)
     /* ------------------------------------------------------------------ */
     /* Phase 2: Parallel TCP bandwidth measurement                         */
     /* ------------------------------------------------------------------ */
-    printf("\n[CLIENT] Phase 2 — bandwidth test: %d stream(s), %d s → %s:%d\n",
-           args->streams, args->duration, args->target_ip, args->port);
+    struct bandwidth_result bw = { 0 };
 
-    struct stream_arg *ctxs = calloc((size_t)args->streams, sizeof(*ctxs));
-    pthread_t         *tids = calloc((size_t)args->streams, sizeof(*tids));
-    if (!ctxs || !tids) {
-        perror("client: calloc");
-        free(ctxs);
-        free(tids);
-        return -1;
-    }
+    if (args->dss_mode) {
+        printf("\n[CLIENT] Phase 2 — bandwidth test: Dynamic Stream Scaling"
+               ", %d s → %s:%d\n",
+               args->duration, args->target_ip, args->port);
 
-    g_stop = 0;
+        if (run_bandwidth_dss(args, &bw) != 0)
+            return -1;
+    } else {
+        printf("\n[CLIENT] Phase 2 — bandwidth test: %d stream(s), %d s → %s:%d\n",
+               args->streams, args->duration, args->target_ip, args->port);
 
-    for (int i = 0; i < args->streams; i++) {
-        ctxs[i].target_ip  = args->target_ip;
-        ctxs[i].port       = args->port;
-        ctxs[i].stream_id  = i + 1;
-        ctxs[i].bytes_sent = 0;
-
-        if (pthread_create(&tids[i], NULL, stream_worker, &ctxs[i]) != 0) {
-            perror("client: pthread_create");
-            g_stop = 1;
-            for (int j = 0; j < i; j++)
-                pthread_join(tids[j], NULL);
+        struct stream_arg *ctxs = calloc((size_t)args->streams, sizeof(*ctxs));
+        pthread_t         *tids = calloc((size_t)args->streams, sizeof(*tids));
+        if (!ctxs || !tids) {
+            perror("client: calloc");
             free(ctxs);
             free(tids);
             return -1;
         }
-    }
 
-    sleep((unsigned)args->duration);
-    g_stop = 1;
+        g_stop = 0;
 
-    long long total_bytes = 0;
-    int       ok_streams  = 0;
-    for (int i = 0; i < args->streams; i++) {
-        pthread_join(tids[i], NULL);
-        if (ctxs[i].bytes_sent > 0) {
-            total_bytes += ctxs[i].bytes_sent;
-            ok_streams++;
+        for (int i = 0; i < args->streams; i++) {
+            ctxs[i].target_ip  = args->target_ip;
+            ctxs[i].port       = args->port;
+            ctxs[i].stream_id  = i + 1;
+            ctxs[i].bytes_sent = 0;
+
+            if (pthread_create(&tids[i], NULL, stream_worker, &ctxs[i]) != 0) {
+                perror("client: pthread_create");
+                g_stop = 1;
+                for (int j = 0; j < i; j++)
+                    pthread_join(tids[j], NULL);
+                free(ctxs);
+                free(tids);
+                return -1;
+            }
         }
+
+        sleep((unsigned)args->duration);
+        g_stop = 1;
+
+        long long total_bytes = 0;
+        int       ok_streams  = 0;
+        for (int i = 0; i < args->streams; i++) {
+            pthread_join(tids[i], NULL);
+            long long bs = __atomic_load_n(&ctxs[i].bytes_sent, __ATOMIC_RELAXED);
+            if (bs > 0) {
+                total_bytes += bs;
+                ok_streams++;
+            }
+        }
+
+        free(ctxs);
+        free(tids);
+
+        if (ok_streams == 0) {
+            fprintf(stderr, "[CLIENT] All streams failed to connect.\n");
+            return -1;
+        }
+
+        bw.throughput_gbps  = ((double)total_bytes * 8.0)
+                            / (double)args->duration / 1.0e9;
+        bw.duration_sec     = args->duration;
+        bw.parallel_streams = args->streams;
+        bw.optimal_streams  = 0;
     }
-
-    free(ctxs);
-    free(tids);
-
-    if (ok_streams == 0) {
-        fprintf(stderr, "[CLIENT] All streams failed to connect.\n");
-        return -1;
-    }
-
-    double throughput_gbps = ((double)total_bytes * 8.0)
-                           / (double)args->duration / 1.0e9;
 
     struct ping_result ping = {
         .avg_latency_ms  = icmp_result.avg_latency_ms,
         .packet_loss_pct = icmp_result.packet_loss_pct,
-    };
-    struct bandwidth_result bw = {
-        .throughput_gbps  = throughput_gbps,
-        .duration_sec     = args->duration,
-        .parallel_streams = args->streams,
     };
 
     FILE *out = stdout;

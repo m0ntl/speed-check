@@ -71,7 +71,11 @@ void print_bandwidth(FILE *out, const struct bandwidth_result *bw)
     else
         fprintf(out, "Throughput : %.1f Mbps\n", bw->throughput_gbps * 1000.0);
     fprintf(out, "Duration   : %d s\n", bw->duration_sec);
-    fprintf(out, "Streams    : %d\n", bw->parallel_streams);
+    if (bw->optimal_streams > 0)
+        fprintf(out, "Streams    : %d optimal (of %d active)\n",
+                bw->optimal_streams, bw->parallel_streams);
+    else
+        fprintf(out, "Streams    : %d\n", bw->parallel_streams);
 }
 
 void print_results_json(FILE *out, const struct ping_result *ping,
@@ -91,7 +95,11 @@ void print_results_json(FILE *out, const struct ping_result *ping,
     fprintf(out, "  \"bandwidth_stats\": {\n");
     fprintf(out, "    \"throughput_gbps\": %.3f,\n", bw->throughput_gbps);
     fprintf(out, "    \"duration_sec\": %d,\n",       bw->duration_sec);
-    fprintf(out, "    \"parallel_streams\": %d\n",    bw->parallel_streams);
+    fprintf(out, "    \"parallel_streams\": %d",       bw->parallel_streams);
+    if (bw->optimal_streams > 0)
+        fprintf(out, ",\n    \"optimal_streams\": %d\n", bw->optimal_streams);
+    else
+        fprintf(out, "\n");
     fprintf(out, "  }\n");
     fprintf(out, "}\n");
 }
