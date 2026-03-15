@@ -7,13 +7,14 @@
 struct client_args {
     const char *target_ip;
     int         port;
-    int         ping_count;   /* ICMP pings to send          (default 4)  */
-    int         duration;     /* bandwidth test duration, s  (default 10) */
-    int         streams;      /* parallel TCP streams        (default 4)  */
-    int         json_output;  /* 1 = emit JSON, 0 = plain text            */
-    const char *output_path;  /* write statistics here; NULL = stdout     */
-    int         dss_mode;     /* 1 = Dynamic Stream Scaling; 0 = static   */
-    int         dss_window_ms;/* DSS sampling window in ms  (default 500) */
+    int         ping_count;         /* ICMP pings to send          (default 4)  */
+    int         duration;           /* bandwidth test duration, s  (default 10) */
+    int         streams;            /* parallel TCP streams        (default 4)  */
+    int         json_output;        /* 1 = emit JSON, 0 = plain text            */
+    const char *output_path;        /* write statistics here; NULL = stdout     */
+    int         dss_mode;           /* 1 = Dynamic Stream Scaling; 0 = static   */
+    int         dss_window_ms;      /* DSS sampling window in ms  (default 500) */
+    int         skip_version_check; /* 1 = skip Phase 0 handshake (already done) */
 };
 
 /*
@@ -25,6 +26,19 @@ struct run_client_result {
     double avg_latency_ms;    /* average ICMP RTT in milliseconds  */
     double packet_loss_pct;   /* packet-loss percentage from ICMP  */
 };
+
+/*
+ * client_check_server_version — open a short TCP connection to the server
+ * and exchange version strings.  When dss_mode is non-zero the greeting
+ * includes the DSS capability flag.
+ *
+ * Returns  0 when the server version matches.
+ * Returns -1 on mismatch, timeout, or connection failure.
+ *
+ * Interactive mode calls this once at start-up so that individual test
+ * runs can set skip_version_check = 1 and avoid repeating the handshake.
+ */
+int client_check_server_version(const char *target_ip, int port, int dss_mode);
 
 /*
  * run_client — execute the two-phase diagnostic sequence:

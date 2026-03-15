@@ -492,15 +492,16 @@ static void execute_test(AppCtx *ctx)
         render_running("TCP Bandwidth", ctx->target_ip);
 
         struct client_args args = {
-            .target_ip     = ctx->target_ip,
-            .port          = ctx->port,
-            .ping_count    = ctx->ping_count,
-            .duration      = ctx->duration,
-            .streams       = ctx->streams,
-            .json_output   = 0,
-            .output_path   = NULL,
-            .dss_mode      = 0,
-            .dss_window_ms = DSS_WINDOW_MS,
+            .target_ip          = ctx->target_ip,
+            .port               = ctx->port,
+            .ping_count         = ctx->ping_count,
+            .duration           = ctx->duration,
+            .streams            = ctx->streams,
+            .json_output        = 0,
+            .output_path        = NULL,
+            .dss_mode           = 0,
+            .dss_window_ms      = DSS_WINDOW_MS,
+            .skip_version_check = 1,
         };
 
         struct run_client_result bw = {0};
@@ -656,6 +657,14 @@ int interactive_main(const char *target_ip, int port, int ping_count)
         .last_bw_failed   = 1,
     };
     snprintf(ctx.server_str, sizeof(ctx.server_str), "%s:%d", target_ip, port);
+
+    /* Version check — runs once here so individual tests skip the handshake. */
+    if (client_check_server_version(target_ip, port, 0) != 0) {
+        fprintf(stderr,
+                "spdchk: version check failed — cannot start interactive mode.\n");
+        history_free();
+        return -1;
+    }
 
     setup_terminal_raw_mode();
 
