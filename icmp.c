@@ -7,6 +7,7 @@
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
 #include <arpa/inet.h>
+#include <time.h>
 
 #include "icmp.h"
 
@@ -26,13 +27,22 @@ static uint16_t icmp_checksum(void *buf, int len)
     return (uint16_t)(~sum);
 }
 
-int icmp_check(const char *target_ip)
+static double timespec_diff_ms(const struct timespec *end,
+                                const struct timespec *start)
+{
+    return (double)(end->tv_sec  - start->tv_sec)  * 1000.0
+         + (double)(end->tv_nsec - start->tv_nsec) / 1.0e6;
+}
+
+int icmp_ping(const char *target_ip, int count, struct icmp_stats *stats)
 {
     int               sock;
     struct sockaddr_in dest;
-    struct timeval     tv = { .tv_sec = 2, .tv_usec = 0 };
-    uint8_t            pkt[sizeof(struct icmphdr)];
-    struct icmphdr    *hdr = (struct icmphdr *)pkt;
+    struct timeval     tv  = { .tv_sec = 2, .tv_usec = 0 };
+    uint16_t           pid = (uint16_t)(getpid() & 0xFFFF);
+
+    stats->avg_latency_ms  = 0.0;
+    stats->packet_loss_pct = 100.0;
 
     sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
     if (sock < 0) {
@@ -54,52 +64,72 @@ int icmp_check(const char *target_ip)
         return -1;
     }
 
-    /* Build ICMP echo request */
-    memset(pkt, 0, sizeof(pkt));
-    hdr->type             = ICMP_ECHO;
-    hdr->code             = 0;
-    hdr->un.echo.id       = (uint16_t)(getpid() & 0xFFFF);
-    hdr->un.echo.sequence = 1;
-    hdr->checksum         = icmp_checksum(pkt, (int)sizeof(pkt));
+    int    received  = 0;
+    double total_rtt = 0.0;
 
-    if (sendto(sock, pkt, sizeof(pkt), 0,
-               (struct sockaddr *)&dest, sizeof(dest)) < 0) {
-        perror("icmp: sendto");
-        close(sock);
-        return -1;
+    for (int seq = 1; seq <= count; seq++) {
+        uint8_t        pkt[sizeof(struct icmphdr)];
+        struct icmphdr *hdr = (struct icmphdr *)pkt;
+
+        memset(pkt, 0, sizeof(pkt));
+        hdr->type             = ICMP_ECHO;
+        hdr->code             = 0;
+        hdr->un.echo.id       = pid;
+        hdr->un.echo.sequence = (uint16_t)seq;
+        hdr->checksum         = icmp_checksum(pkt, (int)sizeof(pkt));
+
+        struct timespec t_start, t_end;
+        clock_gettime(CLOCK_MONOTONIC, &t_start);
+
+        if (sendto(sock, pkt, sizeof(pkt), 0,
+                   (struct sockaddr *)&dest, sizeof(dest)) < 0) {
+            perror("icmp: sendto");
+            continue;
+        }
+
+        uint8_t   reply[1500];
+        socklen_t slen = sizeof(dest);
+        ssize_t   n    = recvfrom(sock, reply, sizeof(reply), 0,
+                                   (struct sockaddr *)&dest, &slen);
+        clock_gettime(CLOCK_MONOTONIC, &t_end);
+
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                printf("[ICMP] Seq %d: timeout\n", seq);
+            else
+                perror("icmp: recvfrom");
+            continue;
+        }
+
+        struct ip *iphdr    = (struct ip *)reply;
+        int        iphdrlen = iphdr->ip_hl * 4;
+
+        if (n < iphdrlen + (ssize_t)sizeof(struct icmphdr))
+            continue;
+
+        struct icmphdr *rep = (struct icmphdr *)(reply + iphdrlen);
+        if (rep->type != ICMP_ECHOREPLY || rep->un.echo.id != pid)
+            continue;
+
+        double rtt = timespec_diff_ms(&t_end, &t_start);
+        total_rtt += rtt;
+        received++;
+        printf("[ICMP] Seq %d: reply from %s  RTT = %.3f ms\n",
+               seq, target_ip, rtt);
     }
 
-    /* Wait for reply — raw socket delivers full IP packet */
-    uint8_t   reply[1500];
-    socklen_t slen = sizeof(dest);
-    ssize_t   n    = recvfrom(sock, reply, sizeof(reply), 0,
-                               (struct sockaddr *)&dest, &slen);
     close(sock);
 
-    if (n < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK)
-            fprintf(stderr, "[ICMP] Target Unreachable: no reply within 2 s.\n");
-        else
-            perror("icmp: recvfrom");
+    if (received == 0) {
+        fprintf(stderr, "[ICMP] Error: Destination Unreachable — no replies received.\n");
         return -1;
     }
 
-    /* Skip the IP header to reach the ICMP header */
-    struct ip *iphdr    = (struct ip *)reply;
-    int        iphdrlen = iphdr->ip_hl * 4;
+    stats->avg_latency_ms  = total_rtt / received;
+    stats->packet_loss_pct = (1.0 - (double)received / count) * 100.0;
 
-    if (n < iphdrlen + (ssize_t)sizeof(struct icmphdr)) {
-        fprintf(stderr, "[ICMP] Malformed reply (too short).\n");
-        return -1;
-    }
-
-    struct icmphdr *rep = (struct icmphdr *)(reply + iphdrlen);
-    if (rep->type != ICMP_ECHOREPLY) {
-        fprintf(stderr, "[ICMP] Unexpected ICMP type %d (expected ECHOREPLY).\n",
-                (int)rep->type);
-        return -1;
-    }
-
-    printf("[ICMP] Echo reply received — target is reachable.\n");
+    printf("[ICMP] %d/%d packets received, %.1f%% loss, avg RTT %.3f ms\n",
+           received, count,
+           stats->packet_loss_pct, stats->avg_latency_ms);
     return 0;
 }

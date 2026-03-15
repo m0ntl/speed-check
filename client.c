@@ -27,8 +27,10 @@ int run_client(const char *target_ip, int port, int count)
     /* ------------------------------------------------------------------ */
     /* Phase 1: ICMP reachability                                          */
     /* ------------------------------------------------------------------ */
-    printf("[CLIENT] Phase 1 — ICMP reachability check → %s\n", target_ip);
-    if (icmp_check(target_ip) != 0) {
+    printf("[CLIENT] Phase 1 — ICMP ping (%d packets) → %s\n",
+           DEFAULT_COUNT, target_ip);
+    struct icmp_stats icmp_result;
+    if (icmp_ping(target_ip, DEFAULT_COUNT, &icmp_result) != 0) {
         fprintf(stderr, "[CLIENT] Aborting: target unreachable.\n");
         return -1;
     }

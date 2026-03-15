@@ -5,7 +5,7 @@
 #include <time.h>
 
 #define DEFAULT_PORT  2200
-#define DEFAULT_COUNT 10
+#define DEFAULT_COUNT 4      /* ICMP pings per test (spec §3.2) */
 
 /*
  * spdchk_payload — packed measurement frame sent over TCP.
