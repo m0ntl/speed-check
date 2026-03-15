@@ -9,7 +9,7 @@
 
 Both modes are compiled into a single binary toggled by CLI flags (`-s` server, `-c <IP>` client). The binary requires `CAP_NET_RAW` (or `sudo`) for the raw ICMP socket.
 
-Current version: **0.6.0** (defined in `spdchk.h`).
+Current version: **0.7.0** (defined in `spdchk.h`).
 
 ### CLI Flags
 
@@ -48,6 +48,8 @@ Current version: **0.6.0** (defined in `spdchk.h`).
 | `logger.c` | Thread-safe dual-output logger: writes to both syslog (`LOG_DAEMON` facility) and stdout/stderr; TRACE messages are rate-limited to 1 000 calls/s to prevent disk exhaustion |
 | `interactive.h` | Declares `interactive_main()` (all implementation types are internal to `interactive.c`) |
 | `interactive.c` | Full interactive client mode using `termios` raw mode and ANSI escape codes (no ncurses). Implements a state machine (`AppState` enum: MAIN_MENU, RUNNING_TEST, VIEW_RESULTS, VIEW_HISTORY, SETTINGS, EXIT), arrow-key navigation via 3-byte CSI escape-sequence parsing, ANSI-rendered menus with inverted highlight on the selected item, parameter editing that temporarily restores canonical mode, and a session history table that prints changed columns in yellow for easy delta comparison |
+| `telemetry.h` | Declares `spdchk_telemetry_t` (shared state: `total_duration`, `parallel_streams`, `avg_latency_ms`, `stop`, atomic `total_bytes`), `TELEMETRY_REFRESH_MS` (200 ms / 5 Hz), `TELEMETRY_BAR_WIDTH` (30 chars), `telemetry_start()`, and `telemetry_stop()` |
+| `telemetry.c` | Live progress display for the Bandwidth Phase: a pthread wakes every 200 ms, reads atomic byte counters from `stream_worker` threads, and redraws a 5-line ASCII block in-place using ANSI cursor-up escape codes; auto-scales bar and separator to terminal width via `ioctl TIOCGWINSZ`; `isatty()` guard disables rendering on non-interactive output; installs a SIGINT forwarder that emits clean newlines and delegates to the previously-registered handler |
 | `Makefile` | Build rules for the `spdchk` binary |
 
 ---
