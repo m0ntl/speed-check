@@ -7,6 +7,7 @@
 #include "logger.h"
 #include "server.h"
 #include "client.h"
+#include "interactive.h"
 
 static void usage(const char *prog)
 {
@@ -26,6 +27,7 @@ static void usage(const char *prog)
             "  -m <seconds>   Server max-duration per test (0 = unlimited)\n"
             "  -j             Emit JSON output\n"
             "  -o <file>      Write statistics to <file> instead of stdout\n"
+            "  -I, --interactive  Interactive client mode (requires -c)\n"
             "  -v             Increase log verbosity (cumulative; -v=INFO -vv=DEBUG -vvv=TRACE)\n"
             "  --log-level N  Set log verbosity directly (0=ERROR 1=INFO 2=DEBUG 3=TRACE)\n",
             prog, prog,
@@ -47,14 +49,16 @@ int main(int argc, char *argv[])
     int   dss_window   = DSS_WINDOW_MS;
     int   verbose_cnt  = 0;
     int   explicit_log = -1;
+    int   interactive  = 0;
     int   opt;
 
     static const struct option long_opts[] = {
-        { "log-level", required_argument, NULL, 'L' },
+        { "log-level",   required_argument, NULL, 'L' },
+        { "interactive", no_argument,       NULL, 'I' },
         { NULL, 0, NULL, 0 }
     };
 
-    while ((opt = getopt_long(argc, argv, "sc:p:i:d:n:m:jDw:o:v",
+    while ((opt = getopt_long(argc, argv, "sc:p:i:d:n:m:jDw:o:vI",
                               long_opts, NULL)) != -1) {
         switch (opt) {
         case 's':
@@ -116,6 +120,9 @@ int main(int argc, char *argv[])
         case 'o':
             output_path = optarg;
             break;
+        case 'I':
+            interactive = 1;
+            break;
         case 'v':
             verbose_cnt++;
             break;
@@ -138,6 +145,12 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
+    if (interactive && mode_server) {
+        fprintf(stderr, "Error: --interactive is a client-only flag; cannot be used with -s.\n\n");
+        usage(argv[0]);
+        return EXIT_FAILURE;
+    }
+
     if (!mode_server && !target_ip) {
         fprintf(stderr, "Error: specify either -s (server) or -c <IP> (client).\n\n");
         usage(argv[0]);
@@ -153,9 +166,12 @@ int main(int argc, char *argv[])
     logger_init(log_level);
 
     int ret;
-    if (mode_server)
+    if (mode_server) {
         ret = run_server(port, max_dur) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
-    else {
+    } else if (interactive) {
+        ret = interactive_main(target_ip, port, ping_count) == 0
+              ? EXIT_SUCCESS : EXIT_FAILURE;
+    } else {
         struct client_args args = {
             .target_ip    = target_ip,
             .port         = port,

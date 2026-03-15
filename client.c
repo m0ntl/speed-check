@@ -330,7 +330,7 @@ static int run_bandwidth_dss(const struct client_args *args,
     return 0;
 }
 
-int run_client(const struct client_args *args)
+int run_client_ex(const struct client_args *args, struct run_client_result *result)
 {
     /* ------------------------------------------------------------------ */
     /* Phase 0: Version check                                              */
@@ -431,6 +431,12 @@ int run_client(const struct client_args *args)
         .packet_loss_pct = icmp_result.packet_loss_pct,
     };
 
+    if (result) {
+        result->throughput_gbps = bw.throughput_gbps;
+        result->avg_latency_ms  = icmp_result.avg_latency_ms;
+        result->packet_loss_pct = icmp_result.packet_loss_pct;
+    }
+
     FILE *out = stdout;
     if (args->output_path) {
         out = fopen(args->output_path, "w");
@@ -450,4 +456,9 @@ int run_client(const struct client_args *args)
         fclose(out);
 
     return 0;
+}
+
+int run_client(const struct client_args *args)
+{
+    return run_client_ex(args, NULL);
 }
