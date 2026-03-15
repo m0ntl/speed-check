@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <float.h>
+#include <time.h>
 
 #include "metrics.h"
 
@@ -60,4 +61,37 @@ void print_metrics(const struct metrics_result *r)
     }
 
     free(valid);
+}
+
+void print_bandwidth(const struct bandwidth_result *bw)
+{
+    printf("\n--- bandwidth statistics ---\n");
+    if (bw->throughput_gbps >= 1.0)
+        printf("Throughput : %.3f Gbps\n", bw->throughput_gbps);
+    else
+        printf("Throughput : %.1f Mbps\n", bw->throughput_gbps * 1000.0);
+    printf("Duration   : %d s\n", bw->duration_sec);
+    printf("Streams    : %d\n", bw->parallel_streams);
+}
+
+void print_results_json(const struct ping_result *ping,
+                        const struct bandwidth_result *bw)
+{
+    time_t     now     = time(NULL);
+    struct tm *tm_info = gmtime(&now);
+    char       ts[32];
+    strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%SZ", tm_info);
+
+    printf("{\n");
+    printf("  \"timestamp\": \"%s\",\n", ts);
+    printf("  \"ping_stats\": {\n");
+    printf("    \"avg_latency_ms\": %.3f,\n", ping->avg_latency_ms);
+    printf("    \"packet_loss_pct\": %.1f\n",  ping->packet_loss_pct);
+    printf("  },\n");
+    printf("  \"bandwidth_stats\": {\n");
+    printf("    \"throughput_gbps\": %.3f,\n", bw->throughput_gbps);
+    printf("    \"duration_sec\": %d,\n",       bw->duration_sec);
+    printf("    \"parallel_streams\": %d\n",    bw->parallel_streams);
+    printf("  }\n");
+    printf("}\n");
 }

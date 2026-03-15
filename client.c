@@ -2,121 +2,200 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <time.h>
-#include <errno.h>
 
 #include "client.h"
 #include "icmp.h"
 #include "metrics.h"
 #include "spdchk.h"
 
-/* Return elapsed time between two CLOCK_MONOTONIC samples in milliseconds. */
-static double timespec_diff_ms(const struct timespec *end,
-                                const struct timespec *start)
-{
-    double sec  = (double)(end->tv_sec  - start->tv_sec);
-    double nsec = (double)(end->tv_nsec - start->tv_nsec);
-    return sec * 1000.0 + nsec / 1.0e6;
-}
+#define SEND_BUF_SIZE       (64 * 1024)  /* 64 KiB per send call       */
+#define CONNECT_TIMEOUT_SEC 10           /* abort if server unreachable */
 
-int run_client(const char *target_ip, int port, int count)
+/* Shared stop signal — set to 1 by main thread after the test duration. */
+static volatile int g_stop = 0;
+
+/* Per-stream worker context. */
+struct stream_arg {
+    const char *target_ip;
+    int         port;
+    int         stream_id;
+    long long   bytes_sent;  /* output: -1 on connect failure */
+};
+
+/* Non-blocking connect with a poll()-based timeout. */
+static int connect_timed(int fd, const struct sockaddr *addr,
+                          socklen_t addrlen, int timeout_sec)
 {
-    /* ------------------------------------------------------------------ */
-    /* Phase 1: ICMP reachability                                          */
-    /* ------------------------------------------------------------------ */
-    printf("[CLIENT] Phase 1 — ICMP ping (%d packets) → %s\n",
-           DEFAULT_COUNT, target_ip);
-    struct icmp_stats icmp_result;
-    if (icmp_ping(target_ip, DEFAULT_COUNT, &icmp_result) != 0) {
-        fprintf(stderr, "[CLIENT] Aborting: target unreachable.\n");
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
+        return -1;
+
+    int rc = connect(fd, addr, addrlen);
+    if (rc == 0) {
+        fcntl(fd, F_SETFL, flags);
+        return 0;
+    }
+    if (errno != EINPROGRESS)
+        return -1;
+
+    struct pollfd pfd = { .fd = fd, .events = POLLOUT };
+    int r = poll(&pfd, 1, timeout_sec * 1000);
+    if (r <= 0)
+        return -1; /* timeout (0) or poll error (<0) */
+
+    int       err = 0;
+    socklen_t len = sizeof(err);
+    getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len);
+    if (err != 0) {
+        errno = err;
         return -1;
     }
 
-    /* ------------------------------------------------------------------ */
-    /* Phase 2: TCP measurement                                            */
-    /* ------------------------------------------------------------------ */
-    printf("[CLIENT] Phase 2 — TCP measurement, port %d, %d packets\n",
-           port, count);
+    fcntl(fd, F_SETFL, flags); /* restore blocking mode */
+    return 0;
+}
+
+static void *stream_worker(void *arg)
+{
+    struct stream_arg *ctx = arg;
 
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
         perror("client: socket");
-        return -1;
+        ctx->bytes_sent = -1;
+        return NULL;
     }
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port   = htons((uint16_t)port);
+    addr.sin_port   = htons((uint16_t)ctx->port);
+    inet_pton(AF_INET, ctx->target_ip, &addr.sin_addr);
 
-    if (inet_pton(AF_INET, target_ip, &addr.sin_addr) != 1) {
-        fprintf(stderr, "client: invalid address '%s'\n", target_ip);
+    if (connect_timed(sock, (struct sockaddr *)&addr,
+                      sizeof(addr), CONNECT_TIMEOUT_SEC) < 0) {
+        fprintf(stderr, "[CLIENT] Stream %d: connect failed: %s\n",
+                ctx->stream_id, strerror(errno));
         close(sock);
-        return -1;
+        ctx->bytes_sent = -1;
+        return NULL;
     }
 
-    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("client: connect");
+    char *buf = malloc(SEND_BUF_SIZE);
+    if (!buf) {
         close(sock);
-        return -1;
+        ctx->bytes_sent = -1;
+        return NULL;
     }
-    printf("[CLIENT] TCP connection established.\n\n");
+    memset(buf, 0xAB, SEND_BUF_SIZE);
 
-    /* Allocate RTT array; use -1.0 as sentinel for lost packets. */
-    double *rtts = malloc((size_t)count * sizeof(double));
-    if (!rtts) {
-        perror("client: malloc");
-        close(sock);
-        return -1;
-    }
-    for (int i = 0; i < count; i++)
-        rtts[i] = -1.0;
-
-    int received = 0;
-
-    for (int i = 0; i < count; i++) {
-        struct spdchk_payload pkt;
-        memset(&pkt, 0, sizeof(pkt));
-        pkt.seq_num = (uint32_t)i;
-
-        struct timespec t_start, t_end;
-        clock_gettime(CLOCK_MONOTONIC, &t_start);
-        pkt.ts = t_start;
-
-        if (send(sock, &pkt, sizeof(pkt), 0) < 0) {
-            perror("client: send");
+    long long bytes = 0;
+    while (!g_stop) {
+        ssize_t n = send(sock, buf, SEND_BUF_SIZE, MSG_NOSIGNAL);
+        if (n <= 0)
             break;
-        }
-
-        struct spdchk_payload echo;
-        ssize_t n = recv(sock, &echo, sizeof(echo), MSG_WAITALL);
-        clock_gettime(CLOCK_MONOTONIC, &t_end);
-
-        if (n != (ssize_t)sizeof(echo)) {
-            fprintf(stderr,
-                    "[CLIENT] Packet %d: incomplete echo (%zd / %zu bytes)\n",
-                    i + 1, n, sizeof(echo));
-            /* rtts[i] stays -1.0 (lost) */
-            continue;
-        }
-
-        rtts[i] = timespec_diff_ms(&t_end, &t_start);
-        received++;
-        printf("[CLIENT] Packet %3d: RTT = %.3f ms\n", i + 1, rtts[i]);
+        bytes += n;
     }
 
+    free(buf);
     close(sock);
+    ctx->bytes_sent = bytes;
+    return NULL;
+}
 
-    struct metrics_result result = {
-        .count    = count,
-        .received = received,
-        .rtts     = rtts,
+int run_client(const struct client_args *args)
+{
+    /* ------------------------------------------------------------------ */
+    /* Phase 1: ICMP reachability                                          */
+    /* ------------------------------------------------------------------ */
+    printf("[CLIENT] Phase 1 — ICMP ping (%d packets) → %s\n",
+           args->ping_count, args->target_ip);
+
+    struct icmp_stats icmp_result;
+    if (icmp_ping(args->target_ip, args->ping_count, &icmp_result) != 0) {
+        fprintf(stderr, "[CLIENT] Aborting: target unreachable.\n");
+        return -1;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Phase 2: Parallel TCP bandwidth measurement                         */
+    /* ------------------------------------------------------------------ */
+    printf("\n[CLIENT] Phase 2 — bandwidth test: %d stream(s), %d s → %s:%d\n",
+           args->streams, args->duration, args->target_ip, args->port);
+
+    struct stream_arg *ctxs = calloc((size_t)args->streams, sizeof(*ctxs));
+    pthread_t         *tids = calloc((size_t)args->streams, sizeof(*tids));
+    if (!ctxs || !tids) {
+        perror("client: calloc");
+        free(ctxs);
+        free(tids);
+        return -1;
+    }
+
+    g_stop = 0;
+
+    for (int i = 0; i < args->streams; i++) {
+        ctxs[i].target_ip  = args->target_ip;
+        ctxs[i].port       = args->port;
+        ctxs[i].stream_id  = i + 1;
+        ctxs[i].bytes_sent = 0;
+
+        if (pthread_create(&tids[i], NULL, stream_worker, &ctxs[i]) != 0) {
+            perror("client: pthread_create");
+            g_stop = 1;
+            for (int j = 0; j < i; j++)
+                pthread_join(tids[j], NULL);
+            free(ctxs);
+            free(tids);
+            return -1;
+        }
+    }
+
+    sleep((unsigned)args->duration);
+    g_stop = 1;
+
+    long long total_bytes = 0;
+    int       ok_streams  = 0;
+    for (int i = 0; i < args->streams; i++) {
+        pthread_join(tids[i], NULL);
+        if (ctxs[i].bytes_sent > 0) {
+            total_bytes += ctxs[i].bytes_sent;
+            ok_streams++;
+        }
+    }
+
+    free(ctxs);
+    free(tids);
+
+    if (ok_streams == 0) {
+        fprintf(stderr, "[CLIENT] All streams failed to connect.\n");
+        return -1;
+    }
+
+    double throughput_gbps = ((double)total_bytes * 8.0)
+                           / (double)args->duration / 1.0e9;
+
+    struct ping_result ping = {
+        .avg_latency_ms  = icmp_result.avg_latency_ms,
+        .packet_loss_pct = icmp_result.packet_loss_pct,
     };
-    print_metrics(&result);
+    struct bandwidth_result bw = {
+        .throughput_gbps  = throughput_gbps,
+        .duration_sec     = args->duration,
+        .parallel_streams = args->streams,
+    };
 
-    free(rtts);
+    if (args->json_output)
+        print_results_json(&ping, &bw);
+    else
+        print_bandwidth(&bw);
+
     return 0;
 }

@@ -10,16 +10,22 @@
 static void usage(const char *prog)
 {
     fprintf(stderr,
-            "spdchk — network diagnostic utility\n\n"
+            "spdchk — network speed diagnostic utility\n\n"
             "Usage:\n"
-            "  Server : sudo %s -s [-p <port>]\n"
-            "  Client : sudo %s -c <IP> [-p <port>] [-i <count>]\n\n"
+            "  Server : sudo %s -s [-p <port>] [-m <max-duration>]\n"
+            "  Client : sudo %s -c <IP> [-p <port>] [-i <pings>]\n"
+            "                         [-d <seconds>] [-n <streams>] [-j]\n\n"
             "Options:\n"
-            "  -s          Start in server mode (passive listener)\n"
-            "  -c <IP>     Start in client mode, target IPv4 address\n"
-            "  -p <port>   Port number           (default: %d)\n"
-            "  -i <count>  Packets to send       (default: %d)\n",
-            prog, prog, DEFAULT_PORT, DEFAULT_COUNT);
+            "  -s             Start in server mode (passive listener)\n"
+            "  -c <IP>        Start in client mode, target IPv4 address\n"
+            "  -p <port>      Port number              (default: %d)\n"
+            "  -i <pings>     ICMP pings to send       (default: %d)\n"
+            "  -d <seconds>   Bandwidth test duration  (default: %d)\n"
+            "  -n <streams>   Parallel TCP streams     (default: %d)\n"
+            "  -m <seconds>   Server max-duration per test (0 = unlimited)\n"
+            "  -j             Emit JSON output\n",
+            prog, prog,
+            DEFAULT_PORT, DEFAULT_COUNT, DEFAULT_DURATION, DEFAULT_STREAMS);
 }
 
 int main(int argc, char *argv[])
@@ -27,10 +33,14 @@ int main(int argc, char *argv[])
     int   mode_server = 0;
     char *target_ip   = NULL;
     int   port        = DEFAULT_PORT;
-    int   count       = DEFAULT_COUNT;
+    int   ping_count  = DEFAULT_COUNT;
+    int   duration    = DEFAULT_DURATION;
+    int   streams     = DEFAULT_STREAMS;
+    int   max_dur     = 0;
+    int   json_output = 0;
     int   opt;
 
-    while ((opt = getopt(argc, argv, "sc:p:i:")) != -1) {
+    while ((opt = getopt(argc, argv, "sc:p:i:d:n:m:j")) != -1) {
         switch (opt) {
         case 's':
             mode_server = 1;
@@ -47,11 +57,35 @@ int main(int argc, char *argv[])
             }
             break;
         case 'i':
-            count = atoi(optarg);
-            if (count <= 0) {
-                fprintf(stderr, "Error: invalid packet count '%s'.\n", optarg);
+            ping_count = atoi(optarg);
+            if (ping_count <= 0) {
+                fprintf(stderr, "Error: invalid ping count '%s'.\n", optarg);
                 return EXIT_FAILURE;
             }
+            break;
+        case 'd':
+            duration = atoi(optarg);
+            if (duration <= 0) {
+                fprintf(stderr, "Error: invalid duration '%s'.\n", optarg);
+                return EXIT_FAILURE;
+            }
+            break;
+        case 'n':
+            streams = atoi(optarg);
+            if (streams <= 0) {
+                fprintf(stderr, "Error: invalid stream count '%s'.\n", optarg);
+                return EXIT_FAILURE;
+            }
+            break;
+        case 'm':
+            max_dur = atoi(optarg);
+            if (max_dur < 0) {
+                fprintf(stderr, "Error: invalid max-duration '%s'.\n", optarg);
+                return EXIT_FAILURE;
+            }
+            break;
+        case 'j':
+            json_output = 1;
             break;
         default:
             usage(argv[0]);
@@ -72,7 +106,15 @@ int main(int argc, char *argv[])
     }
 
     if (mode_server)
-        return run_server(port, 0) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+        return run_server(port, max_dur) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 
-    return run_client(target_ip, port, count) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+    struct client_args args = {
+        .target_ip   = target_ip,
+        .port        = port,
+        .ping_count  = ping_count,
+        .duration    = duration,
+        .streams     = streams,
+        .json_output = json_output,
+    };
+    return run_client(&args) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

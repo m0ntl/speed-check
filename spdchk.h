@@ -4,8 +4,10 @@
 #include <stdint.h>
 #include <time.h>
 
-#define DEFAULT_PORT  2200
-#define DEFAULT_COUNT 4      /* ICMP pings per test (spec §3.2) */
+#define DEFAULT_PORT     2200
+#define DEFAULT_COUNT    4   /* ICMP pings per test (spec §3.2)       */
+#define DEFAULT_DURATION 10  /* bandwidth-test duration in seconds     */
+#define DEFAULT_STREAMS  4   /* parallel TCP streams for bandwidth test */
 
 /*
  * spdchk_payload — packed measurement frame sent over TCP.
