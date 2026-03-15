@@ -233,7 +233,41 @@ static void read_str_field(const char *label, char *buf, size_t len)
     }
 
     setup_terminal_raw_mode();
-}                                               */
+}
+/* ================================================================== */
+/* Application context                                                 */
+/* ================================================================== */
+typedef struct {
+    AppState state;
+    int      sel;                /* cursor position in the active menu  */
+    int      mode;               /* 0 = client, 1 = server              */
+    /* client params */
+    char     target_ip_buf[64];
+    int      ping_count;
+    int      duration;
+    int      streams;
+    int      dss_mode;
+    int      dss_window_ms;
+    int      json_output;
+    char     output_path[256];
+    int      version_checked;    /* 0 = handshake needed before next TCP run */
+    /* server params */
+    int      port;
+    int      max_dur;
+    /* display */
+    char     server_str[64];
+    /* test state */
+    TestType test_type;          /* test queued for STATE_RUNNING_TEST  */
+    /* last ICMP result */
+    struct icmp_stats        last_icmp;
+    int                      last_icmp_rc;
+    /* last TCP result */
+    struct run_client_result last_bw;
+    int                      last_bw_streams;
+    int                      last_bw_duration;
+    int                      last_bw_failed;
+} AppCtx;
+
 /* ================================================================== */
 #define MENU_ITEMS_CLIENT     5
 #define MENU_ITEMS_SERVER     3
@@ -558,40 +592,6 @@ static void render_history(void)
     printf(A_DIM "  Press any key to return...\n" A_RESET);
     fflush(stdout);
 }
-
-/* ================================================================== */
-/* Application context                                                 */
-/* ================================================================== */
-typedef struct {
-    AppState state;
-    int      sel;                /* cursor position in the active menu  */
-    int      mode;               /* 0 = client, 1 = server              */
-    /* client params */
-    char     target_ip_buf[64];
-    int      ping_count;
-    int      duration;
-    int      streams;
-    int      dss_mode;
-    int      dss_window_ms;
-    int      json_output;
-    char     output_path[256];
-    int      version_checked;    /* 0 = handshake needed before next TCP run */
-    /* server params */
-    int      port;
-    int      max_dur;
-    /* display */
-    char     server_str[64];
-    /* test state */
-    TestType test_type;          /* test queued for STATE_RUNNING_TEST  */
-    /* last ICMP result */
-    struct icmp_stats        last_icmp;
-    int                      last_icmp_rc;
-    /* last TCP result */
-    struct run_client_result last_bw;
-    int                      last_bw_streams;
-    int                      last_bw_duration;
-    int                      last_bw_failed;
-} AppCtx;
 
 /* ================================================================== */
 /* execute_test — run the queued test and append to history            */
