@@ -13,8 +13,8 @@ struct ping_result {
 struct bandwidth_result {
     double throughput_gbps;
     int    duration_sec;
-    int    parallel_streams; /* total streams that ran              */
-    int    optimal_streams;  /* DSS optimal count; 0 in static mode */
+    int    parallel_streams; /* streams used for throughput (DSS optimal, or static count) */
+    int    optimal_streams;  /* total streams DSS probed; 0 in static mode or when no extra probe ran */
 };
 
 /*

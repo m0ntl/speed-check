@@ -315,12 +315,18 @@ static int run_bandwidth_dss(const struct client_args *args,
     /* Signal all streams to stop and collect results */
     g_stop = 1;
 
+    /*
+     * Throughput is computed from the first `optimal_n` streams only.
+     * Any extra probe stream(s) that caused plateau detection kept running
+     * until now but must not inflate the reported result — the summary
+     * must be consistent with the advertised optimal stream count.
+     */
     long long total_bytes = 0;
     int       ok          = 0;
     for (int i = 0; i < n; i++) {
         pthread_join(tids[i], NULL);
         long long bs = __atomic_load_n(&ctxs[i].bytes_sent, __ATOMIC_RELAXED);
-        if (bs >= 0) {
+        if (i < optimal_n && bs >= 0) {
             total_bytes += bs;
             ok++;
         }
@@ -331,14 +337,14 @@ static int run_bandwidth_dss(const struct client_args *args,
         return -1;
     }
 
-    log_info("CLIENT", "DSS: steady state — %d optimal stream(s), %d total active",
+    log_info("CLIENT", "DSS: steady state — %d optimal stream(s) of %d probed",
              optimal_n, n);
 
     out->throughput_gbps  = ((double)total_bytes * 8.0)
                           / (double)args->duration / 1.0e9;
     out->duration_sec     = args->duration;
-    out->parallel_streams = n;
-    out->optimal_streams  = optimal_n;
+    out->parallel_streams = optimal_n;          /* effective count (throughput basis) */
+    out->optimal_streams  = (n > optimal_n) ? n : 0; /* probed count; 0 = no extra probe */
     return 0;
 }
 
