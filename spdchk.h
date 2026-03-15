@@ -4,6 +4,22 @@
 #include <stdint.h>
 #include <time.h>
 
+/*
+ * VERSION — semantic version of this build (https://semver.org).
+ *
+ * Rules for bumping:
+ *   MAJOR (x)  — incompatible change: wire-protocol break, flag removal,
+ *                or any change that requires the peer to be updated too.
+ *   MINOR (y)  — backward-compatible new feature: new flag, new JSON field,
+ *                new server capability that old clients can still ignore.
+ *   PATCH (z)  — backward-compatible bug fix, docs, or refactor with no
+ *                behaviour change visible to the user or the network peer.
+ *
+ * The CI/CD pipeline reads this value to name every release automatically.
+ * Bump it here before merging the commit that should carry the new version.
+ */
+#define SPDCHK_VERSION "0.1.0"
+
 #define DEFAULT_PORT     2200
 #define DEFAULT_COUNT    4   /* ICMP pings per test (spec §3.2)       */
 #define DEFAULT_DURATION 10  /* bandwidth-test duration in seconds     */
