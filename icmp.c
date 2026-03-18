@@ -48,7 +48,7 @@ int icmp_ping(const char *target_ip, int count, struct icmp_stats *stats)
     sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
     if (sock < 0) {
         log_error("ICMP", "socket: %s", strerror(errno));
-        return -1;
+        return (errno == EPERM || errno == EACCES) ? -2 : -1;
     }
 
     if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {

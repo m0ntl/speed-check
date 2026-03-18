@@ -440,6 +440,8 @@ static void render_icmp_results(const struct icmp_stats *s, int rc)
     if (rc == 0) {
         printf("  Avg RTT:     " A_BOLD "%.2f ms\n"  A_RESET, s->avg_latency_ms);
         printf("  Packet loss: " A_BOLD "%.1f%%\n"   A_RESET, s->packet_loss_pct);
+    } else if (rc == -2) {
+        printf("  " A_YELLOW "Insufficient privileges — run with sudo or grant CAP_NET_RAW.\n" A_RESET);
     } else {
         printf("  " A_YELLOW "Target unreachable — all pings lost.\n" A_RESET);
     }

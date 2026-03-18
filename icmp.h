@@ -14,7 +14,9 @@ struct icmp_stats {
  * per-packet RTT, and populate *stats.
  *
  * Returns  0 if at least one reply was received.
- * Returns -1 if all pings failed or on socket error.
+ * Returns -1 if all pings failed or on a non-permission socket error.
+ * Returns -2 if the raw socket could not be created due to insufficient
+ *            privileges (EACCES / EPERM); run with sudo or set CAP_NET_RAW.
  *
  * Requires CAP_NET_RAW / root privileges (SOCK_RAW).
  */
