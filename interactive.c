@@ -677,8 +677,20 @@ static void update_logic(AppCtx *ctx, int key)
         else if (key == KEY_ENTER) {
             if (ctx->mode == 0) {
                 switch (ctx->sel) {
-                case 0: ctx->test_type = TEST_ICMP; ctx->state = STATE_RUNNING_TEST;   break;
-                case 1: ctx->test_type = TEST_TCP;  ctx->state = STATE_RUNNING_TEST;   break;
+                case 0:
+                case 1:
+                    if (!ctx->target_ip_buf[0]) {
+                        read_str_field("Target IP", ctx->target_ip_buf,
+                                       sizeof(ctx->target_ip_buf));
+                        if (!ctx->target_ip_buf[0])
+                            break; /* still empty — stay on main menu */
+                        ctx->version_checked = 0;
+                        snprintf(ctx->server_str, sizeof(ctx->server_str),
+                                 "%s:%d", ctx->target_ip_buf, ctx->port);
+                    }
+                    ctx->test_type = (ctx->sel == 0) ? TEST_ICMP : TEST_TCP;
+                    ctx->state = STATE_RUNNING_TEST;
+                    break;
                 case 2: ctx->state = STATE_RUNNING_SERVER;                             break;
                 case 3: ctx->state = STATE_VIEW_HISTORY;                               break;
                 case 4: ctx->state = STATE_SETTINGS; ctx->sel = 0;                    break;
