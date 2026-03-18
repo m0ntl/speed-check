@@ -269,7 +269,7 @@ typedef struct {
 } AppCtx;
 
 /* ================================================================== */
-#define MENU_ITEMS_CLIENT     5
+#define MENU_ITEMS_CLIENT     6
 #define MENU_ITEMS_SERVER     3
 #define CLIENT_SETTINGS_ITEMS 11
 #define SERVER_SETTINGS_ITEMS 4
@@ -311,11 +311,14 @@ static void render_main_menu(const AppCtx *ctx)
                  ctx->streams, ctx->duration);
         render_item(1, sel, "Run Bandwidth (TCP)", extra);
 
-        snprintf(extra, sizeof(extra), "[%d test(s)]", test_count);
-        render_item(2, sel, "View Session History", extra);
+        snprintf(extra, sizeof(extra), "[port: %d]", ctx->port);
+        render_item(2, sel, "Start Server", extra);
 
-        render_item(3, sel, "Settings", "");
-        render_item(4, sel, "Exit", "");
+        snprintf(extra, sizeof(extra), "[%d test(s)]", test_count);
+        render_item(3, sel, "View Session History", extra);
+
+        render_item(4, sel, "Settings", "");
+        render_item(5, sel, "Exit", "");
     } else {
         snprintf(extra, sizeof(extra), "[port: %d]", ctx->port);
         render_item(0, sel, "Start Server", extra);
@@ -674,9 +677,10 @@ static void update_logic(AppCtx *ctx, int key)
                 switch (ctx->sel) {
                 case 0: ctx->test_type = TEST_ICMP; ctx->state = STATE_RUNNING_TEST;   break;
                 case 1: ctx->test_type = TEST_TCP;  ctx->state = STATE_RUNNING_TEST;   break;
-                case 2: ctx->state = STATE_VIEW_HISTORY;                               break;
-                case 3: ctx->state = STATE_SETTINGS; ctx->sel = 0;                    break;
-                case 4: ctx->state = STATE_EXIT;                                       break;
+                case 2: ctx->state = STATE_RUNNING_SERVER;                             break;
+                case 3: ctx->state = STATE_VIEW_HISTORY;                               break;
+                case 4: ctx->state = STATE_SETTINGS; ctx->sel = 0;                    break;
+                case 5: ctx->state = STATE_EXIT;                                       break;
                 }
             } else {
                 switch (ctx->sel) {
@@ -757,7 +761,7 @@ static void update_logic(AppCtx *ctx, int key)
                     break;
                 case 10:
                     ctx->state = STATE_MAIN_MENU;
-                    ctx->sel   = 3;
+                    ctx->sel   = 4;
                     break;
                 }
             } else {
@@ -782,7 +786,7 @@ static void update_logic(AppCtx *ctx, int key)
             }
         } else if (key == KEY_ESC || key == KEY_QUIT) {
             ctx->state = STATE_MAIN_MENU;
-            ctx->sel   = (ctx->mode == 0) ? 3 : 1;
+            ctx->sel   = (ctx->mode == 0) ? 4 : 1;
         }
         break;
     }
