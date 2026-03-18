@@ -54,6 +54,11 @@ int run_client(const struct client_args *args);
  * run_client_ex — same as run_client(); if result is non-NULL it is
  * populated with the measured throughput and ICMP statistics so that
  * callers can process the data programmatically (e.g. interactive mode).
+ *
+ * Returns  0 on success.
+ * Returns -1 on network or allocation error.
+ * Returns -2 when the ICMP phase fails due to insufficient privileges
+ *            (EPERM / EACCES); run with sudo or set CAP_NET_RAW.
  */
 int run_client_ex(const struct client_args *args,
                   struct run_client_result  *result);

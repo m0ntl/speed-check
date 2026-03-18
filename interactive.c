@@ -462,7 +462,9 @@ static void render_bw_results(const struct run_client_result *r,
     printf(A_BOLD "  Bandwidth Results\n" A_RESET);
     printf(THIN_LINE);
 
-    if (failed) {
+    if (failed == -2) {
+        printf("  " A_YELLOW "Insufficient privileges — run with sudo or grant CAP_NET_RAW.\n" A_RESET);
+    } else if (failed) {
         printf("  " A_YELLOW "Bandwidth test failed.\n" A_RESET);
     } else {
         printf("  Throughput:  " A_BOLD "%.3f Gbps\n" A_RESET, r->throughput_gbps);
@@ -644,7 +646,7 @@ static void execute_test(AppCtx *ctx)
         ctx->version_checked  = (rc == 0) ? 1 : 0;
         ctx->last_bw_streams  = ctx->streams;
         ctx->last_bw_duration = ctx->duration;
-        ctx->last_bw_failed   = (rc != 0);
+        ctx->last_bw_failed   = rc; /* 0 = ok, -1 = error, -2 = no privilege */
         ctx->last_bw          = bw;
 
         TestResult r;
@@ -878,7 +880,7 @@ int interactive_main(void)
     ctx.last_icmp_rc     = -1;
     ctx.last_bw_streams  = 0;
     ctx.last_bw_duration = 0;
-    ctx.last_bw_failed   = 1;
+    ctx.last_bw_failed   = -1;
     snprintf(ctx.server_str, sizeof(ctx.server_str),
              "<not set>:%d", DEFAULT_PORT);
 

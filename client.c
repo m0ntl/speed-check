@@ -369,9 +369,12 @@ int run_client_ex(const struct client_args *args, struct run_client_result *resu
              args->ping_count, args->target_ip);
 
     struct icmp_stats icmp_result;
-    if (icmp_ping(args->target_ip, args->ping_count, &icmp_result) != 0) {
-        log_error("CLIENT", "aborting: target unreachable");
-        return -1;
+    int icmp_rc = icmp_ping(args->target_ip, args->ping_count, &icmp_result);
+    if (icmp_rc != 0) {
+        log_error("CLIENT", "aborting: %s",
+                  icmp_rc == -2 ? "insufficient privileges for raw socket"
+                                : "target unreachable");
+        return icmp_rc; /* -1 = unreachable, -2 = EPERM/EACCES */
     }
 
     /* ------------------------------------------------------------------ */
