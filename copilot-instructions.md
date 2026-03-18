@@ -9,7 +9,7 @@
 
 The binary is a single interactive TUI application. All parameters (mode, target IP, port, streams, etc.) are configured inside the TUI. The only CLI flags accepted at launch are `-v` / `--log-level` for log verbosity. The binary requires `CAP_NET_RAW` (or `sudo`) for the raw ICMP socket.
 
-Current version: **0.8.1** (defined in `spdchk.h`).
+Current version: **0.8.2** (defined in `spdchk.h`).
 
 ### CLI Flags
 
@@ -60,7 +60,7 @@ The Settings screen adapts to the current mode.
 | `server.h` | Declares `run_server(port, max_duration)` |
 | `server.c` | Passive bandwidth sink — binds a TCP socket, accepts connections in per-thread handlers, performs the version handshake (accepts or rejects mismatched clients), drains incoming data, and enforces the optional `max_duration` receive timeout |
 | `icmp.h` | Declares `struct icmp_stats` (avg latency, packet-loss %) and `icmp_ping()` |
-| `icmp.c` | Raw-socket ICMP implementation: builds echo-request packets, computes the Internet checksum, sends `count` pings, receives replies with per-packet RTT timing, and populates `icmp_stats` |
+| `icmp.c` | Raw-socket ICMP implementation: builds echo-request packets, computes the Internet checksum, sends `count` pings, receives replies with per-packet RTT timing, and populates `icmp_stats`; returns `0` on success, `-1` on all-pings-lost or non-permission socket error, `-2` when the raw socket cannot be created due to insufficient privileges (`EPERM`/`EACCES`) |
 | `metrics.h` | Declares `struct ping_result`, `struct bandwidth_result` (`parallel_streams` = effective stream count used for throughput; `optimal_streams` = total streams DSS probed, or 0 when no extra probe ran / static mode), `struct metrics_result`, and the output functions |
 | `metrics.c` | Computes and formats results: `print_metrics()` (loss %, min/avg/max RTT, jitter), `print_bandwidth()` (throughput in Gbps; three stream-count formats: plain `N` for static, `N (DSS)` when no extra probe, `N optimal (of M probed, DSS)` when a plateau probe ran), and `print_results_json()` (full JSON report with timestamp, ping stats, and bandwidth stats; DSS probe count emitted as `dss_probed_streams` when non-zero) |
 | `logger.h` | Declares the four-level log system (`ERROR`/`INFO`/`DEBUG`/`TRACE`), `logger_init()`, `logger_close()`, and the `log_error` / `log_info` / `log_debug` / `log_trace` convenience macros |
