@@ -9,7 +9,7 @@
 
 The binary is a single interactive TUI application. All parameters (mode, target IP, port, streams, etc.) are configured inside the TUI. The only CLI flags accepted at launch are `-v` / `--log-level` for log verbosity. On Linux the binary requires `CAP_NET_RAW` (or `sudo`) for the raw ICMP socket; on Windows no elevated privileges are needed (ICMP uses the `IcmpSendEcho` API).
 
-Current version: **0.12.1** (defined in `spdchk.h`).
+Current version: **0.12.2** (defined in `spdchk.h`).
 
 ### CLI Flags
 
@@ -70,6 +70,7 @@ The Settings screen adapts to the current mode.
 | `spdchk.manifest` | Windows application manifest embedded in `spdchk.exe` via `spdchk.rc`; declares `requestedExecutionLevel=asInvoker` (no UAC elevation prompt), OS compatibility entries for Windows 7 through 11, and the assembly identity; reduces Windows Defender ML heuristic score |
 | `spdchk.rc` | Windows resource script compiled by `windres`; embeds `spdchk.manifest` as `RT_MANIFEST` and a `VERSIONINFO` block (company name, file description, version strings, original filename) so Explorer and Defender see proper binary metadata |
 | `Makefile` | Platform-conditional build rules: Linux selects `icmp.c`, `logger.c`, `main.c` with `-lpthread -lm`; Windows selects `icmp_win.c`, `logger_win.c`, `terminal_win.c`, `win_main.c` with `-lws2_32 -liphlpapi`; on Windows `windres spdchk.rc` compiles `spdchk_res.o` (manifest + version info) and links it into the executable; Linux-only `make test` target compiles each production source under test as a separate `tests/*_t.o` object with `-DTEST_MODE -include tests/mock_sockets.h`, links them with the test sources and `tests/mock_sockets.c`, and runs `./spdchk_test` |
+| `.github/workflows/release.yml` | GitHub Actions CI/CD pipeline: `test` job runs `make test` on Ubuntu and uploads the report as an artifact; `build-amd64`, `build-arm64`, `build-windows`, `build-windows-arm64` jobs compile the binary for each target and upload it; `release` job (needs all others) downloads all artifacts, creates a GitHub Release tagged `v{SPDCHK_VERSION}` with a changelog derived from `git log`, and attaches the four binaries plus the test report; a pre-release guard step fails the job if the computed tag already exists in the repo, preventing accidental overwrites of published releases |
 | `tests/mock_sockets.h` | Socket-level mock layer for `TEST_MODE` builds; force-included via `-include` when compiling `icmp_t.o` and `client_t.o`; pulls in the real system headers first so their declarations are intact, then—under `#ifdef TEST_MODE`—replaces `socket`, `connect`, `fcntl`, `setsockopt`, `send`, `recv`, `sendto`, `recvfrom`, and `close` with controllable stub macros; also declares the global control variables (`mock_socket_return`, `mock_recv_buf`, etc.) and `mock_reset()` |
 | `tests/mock_sockets.c` | Definitions of all mock control variables and stub function implementations; `mock_recv()` replays bytes from `mock_recv_buf` one-by-one to simulate server responses; `mock_recvfrom()` returns `EAGAIN` to simulate ICMP timeouts; `mock_reset()` restores defaults between tests |
 | `tests/harness.h` | Minimal test harness: `ASSERT_EQ_INT`, `ASSERT_CONTAINS`, `ASSERT_NOT_CONTAINS` macros that call `test_fail()` and return on failure; `run_test()` and `test_fail()` are implemented in `test_main.c` |
