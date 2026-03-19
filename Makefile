@@ -15,7 +15,7 @@ BASE_SRCS = server.c client.c metrics.c interactive.c telemetry.c
 
 ifeq ($(OS),Windows_NT)
     CFLAGS  += -D_DEFAULT_SOURCE
-    LDFLAGS  = -lm -lpthread -lws2_32 -liphlpapi
+    LDFLAGS  = -lm -Wl,-Bstatic -lpthread -Wl,-Bdynamic -lws2_32 -liphlpapi
     TARGET   = spdchk.exe
     SRCS     = $(BASE_SRCS) icmp_win.c logger_win.c terminal_win.c win_main.c
 else
