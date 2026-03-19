@@ -105,7 +105,7 @@ int client_check_server_version(const char *target_ip, int port, int dss_mode)
                   "version mismatch: client=%s, server=%s. "
                   "Please upgrade both sides to the same version.",
                   SPDCHK_VERSION, sv);
-        return -1;
+        return -2;
     }
 
     if (ri == 0) {
@@ -406,8 +406,11 @@ int run_client_ex(const struct client_args *args, struct run_client_result *resu
     if (!args->skip_version_check) {
         log_info("CLIENT", "Phase 0 — version check (client %s)%s...",
                  SPDCHK_VERSION, args->dss_mode ? " [DSS]" : "");
-        if (client_check_server_version(args->target_ip, args->port,
-                                        args->dss_mode) != 0)
+        int ver_rc = client_check_server_version(args->target_ip, args->port,
+                                                  args->dss_mode);
+        if (ver_rc == -2)
+            return -3;  /* version mismatch — distinguishable by caller */
+        if (ver_rc != 0)
             return -1;
         log_info("CLIENT", "version OK");
     }

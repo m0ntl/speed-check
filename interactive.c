@@ -515,6 +515,9 @@ static void render_bw_results(const struct run_client_result *r,
 
     if (failed == -2) {
         printf("  " A_YELLOW "Insufficient privileges — run with sudo or grant CAP_NET_RAW.\n" A_RESET);
+    } else if (failed == -3) {
+        printf("  " A_YELLOW "Version mismatch — client and server must run the same version (%s).\n" A_RESET,
+               SPDCHK_VERSION);
     } else if (failed) {
         printf("  " A_YELLOW "Bandwidth test failed.\n" A_RESET);
     } else {

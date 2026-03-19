@@ -33,7 +33,8 @@ struct run_client_result {
  * includes the DSS capability flag.
  *
  * Returns  0 when the server version matches.
- * Returns -1 on mismatch, timeout, or connection failure.
+ * Returns -1 on connection failure, timeout, or unexpected response.
+ * Returns -2 when the server explicitly reports a version mismatch.
  *
  * Interactive mode calls this once at start-up so that individual test
  * runs can set skip_version_check = 1 and avoid repeating the handshake.
@@ -59,6 +60,8 @@ int run_client(const struct client_args *args);
  * Returns -1 on network or allocation error.
  * Returns -2 when the ICMP phase fails due to insufficient privileges
  *            (EPERM / EACCES); run with sudo or set CAP_NET_RAW.
+ * Returns -3 when the version handshake reveals a server/client version
+ *            mismatch; both sides must be upgraded to the same version.
  */
 int run_client_ex(const struct client_args *args,
                   struct run_client_result  *result);
