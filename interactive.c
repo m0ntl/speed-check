@@ -65,6 +65,8 @@ typedef struct {
     int    duration;      /* TCP parameter; 0 for ICMP-only runs */
     double throughput;    /* Gbps; 0 for ICMP-only runs          */
     double latency;       /* ms; -1 if target unreachable        */
+    double reliability_score; /* TCP only; 0 when unverified     */
+    int    is_verified;       /* TCP only; 1 when Phase 3 confirmed */
     char   timestamp[20];
 } TestResult;
 
@@ -628,9 +630,9 @@ static void render_history(void)
             if (strcmp(c->test_type, "TCP") != 0)
                 continue;
             if (tcp_printed == 0) {
-                printf(A_BOLD "  %-3s  %-19s  %-7s  %-4s  %s\n" A_RESET,
+                printf(A_BOLD "  %-3s  %-19s  %-7s  %-4s  %-14s  %s\n" A_RESET,
                        "#", "Timestamp", "Streams", "Dur",
-                       "Throughput");
+                       "Throughput", "Reliability");
                 printf(THIN_LINE);
             }
             tcp_printed++;
@@ -645,10 +647,34 @@ static void render_history(void)
                      prev_tcp != NULL,
                      "%-4d");
             printf("  ");
-            hist_dbl(c->throughput,
-                     prev_tcp ? prev_tcp->throughput : 0.0,
-                     prev_tcp != NULL,
-                     "%.3f Gbps");
+            /* Throughput — format to fixed-width buffer for column alignment */
+            {
+                char tput_str[32];
+                if (c->throughput < 0.0)
+                    snprintf(tput_str, sizeof(tput_str), "n/a");
+                else
+                    snprintf(tput_str, sizeof(tput_str), "%.3f Gbps", c->throughput);
+                int changed = prev_tcp && (prev_tcp->throughput != c->throughput);
+                if (changed) printf(A_YELLOW);
+                printf("%-14s", tput_str);
+                if (changed) printf(A_RESET);
+            }
+            printf("  ");
+            /* Reliability — only meaningful when is_verified */
+            if (c->is_verified) {
+                const char *rating;
+                if (c->reliability_score >= 99.9)      rating = "Optimal";
+                else if (c->reliability_score >= 95.0) rating = "Stable";
+                else if (c->reliability_score >= 90.0) rating = "Degraded";
+                else                                   rating = "Unstable";
+                int changed = prev_tcp && prev_tcp->is_verified &&
+                              (prev_tcp->reliability_score != c->reliability_score);
+                if (changed) printf(A_YELLOW);
+                printf("%.1f%% (%s)", c->reliability_score, rating);
+                if (changed) printf(A_RESET);
+            } else {
+                printf(A_DIM "\xe2\x80\x94" A_RESET); /* em dash */
+            }
             printf("\n");
             prev_tcp = c;
         }
@@ -677,10 +703,12 @@ static void execute_test(AppCtx *ctx)
         TestResult r;
         strncpy(r.test_type, "ICMP", sizeof(r.test_type));
         r.test_type[sizeof(r.test_type) - 1] = '\0';
-        r.streams    = 0;
-        r.duration   = 0;
-        r.throughput = 0.0;
-        r.latency    = (rc == 0) ? s.avg_latency_ms : -1.0;
+        r.streams            = 0;
+        r.duration           = 0;
+        r.throughput         = 0.0;
+        r.latency            = (rc == 0) ? s.avg_latency_ms : -1.0;
+        r.reliability_score  = 0.0;
+        r.is_verified        = 0;
         get_timestamp(r.timestamp, sizeof(r.timestamp));
         history_append(&r);
 
@@ -713,10 +741,12 @@ static void execute_test(AppCtx *ctx)
         TestResult r;
         strncpy(r.test_type, "TCP", sizeof(r.test_type));
         r.test_type[sizeof(r.test_type) - 1] = '\0';
-        r.streams    = ctx->streams;
-        r.duration   = ctx->duration;
-        r.throughput = (rc == 0) ? bw.throughput_gbps : -1.0;
-        r.latency    = -1.0;
+        r.streams            = ctx->streams;
+        r.duration           = ctx->duration;
+        r.throughput         = (rc == 0) ? bw.throughput_gbps : -1.0;
+        r.latency            = -1.0;
+        r.reliability_score  = (rc == 0) ? bw.reliability_score : 0.0;
+        r.is_verified        = (rc == 0) ? bw.is_verified : 0;
         get_timestamp(r.timestamp, sizeof(r.timestamp));
         history_append(&r);
     }
