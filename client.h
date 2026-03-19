@@ -22,9 +22,11 @@ struct client_args {
  * Allows callers such as interactive mode to process results programmatically.
  */
 struct run_client_result {
-    double throughput_gbps;   /* total bandwidth measured in Gbps  */
-    double avg_latency_ms;    /* average ICMP RTT in milliseconds  */
-    double packet_loss_pct;   /* packet-loss percentage from ICMP  */
+    double throughput_gbps;   /* total bandwidth measured in Gbps                        */
+    double avg_latency_ms;    /* average ICMP RTT in milliseconds                        */
+    double packet_loss_pct;   /* packet-loss percentage from ICMP                        */
+    double reliability_score; /* (bytes_received / bytes_sent) * 100; 0 when unverified  */
+    int    is_verified;       /* 1 = server confirmed via Phase 3; 0 = local estimate    */
 };
 
 /*

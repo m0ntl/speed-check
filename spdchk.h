@@ -18,7 +18,7 @@
  * The CI/CD pipeline reads this value to name every release automatically.
  * Bump it here before merging the commit that should carry the new version.
  */
-#define SPDCHK_VERSION "0.12.3"
+#define SPDCHK_VERSION "0.13.0"
 
 #define DEFAULT_PORT       2200
 #define DEFAULT_COUNT      4    /* ICMP pings per test (spec §3.2)       */
@@ -39,5 +39,19 @@ struct spdchk_payload {
     struct timespec ts;         /* Departure timestamp (CLOCK_MONOTONIC)         */
     char            padding[32];/* Optional padding for MTU probing              */
 } __attribute__((packed));
+
+/*
+ * spdchk_report — Phase 3 end-of-test report returned by the server.
+ * The server transmits a text line: "SPDCHK_REPORT <bytes> <duration_ms>\n"
+ * populated from the session byte accumulator.
+ */
+typedef struct {
+    uint64_t total_bytes_received;  /* bytes the server actually received  */
+    uint32_t test_duration_ms;      /* server-observed session duration    */
+    uint32_t server_version;        /* packed: (major<<16)|(minor<<8)|patch */
+} spdchk_report;
+
+/* Greeting sent by the client to request a Phase 3 report from the server. */
+#define SPDCHK_REPORT_REQ "SPDCHK_REPORT_REQ\n"
 
 #endif /* SPDCHK_H */

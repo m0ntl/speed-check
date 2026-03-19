@@ -250,6 +250,82 @@ static void *stream_worker(void *arg)
 }
 
 /* ------------------------------------------------------------------ */
+/* Phase 3 — request server-verified byte count                        */
+/* ------------------------------------------------------------------ */
+
+/*
+ * request_server_report — open a short control connection after the data
+ * phase, send SPDCHK_REPORT_REQ, and wait up to 2 seconds for the server's
+ * tally.  Returns the server-confirmed byte count and sets *is_verified = 1
+ * on success.  Falls back to bytes_sent (local estimate) and *is_verified = 0
+ * on any connection or timeout error.
+ */
+static uint64_t request_server_report(const struct client_args *args,
+                                       uint64_t bytes_sent, int *is_verified)
+{
+    *is_verified = 0;
+
+    int ctrl = socket(AF_INET, SOCK_STREAM, 0);
+    if (ctrl < 0) {
+        log_info("CLIENT", "Phase 3: socket failed — using local estimate");
+        return bytes_sent;
+    }
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port   = htons((uint16_t)args->port);
+    inet_pton(AF_INET, args->target_ip, &addr.sin_addr);
+
+    if (connect_timed(ctrl, (struct sockaddr *)&addr, sizeof(addr), 2) < 0) {
+        log_info("CLIENT", "Phase 3: control connection failed — using local estimate");
+        sock_close(ctrl);
+        return bytes_sent;
+    }
+
+    /* 2-second receive timeout */
+#ifdef _WIN32
+    DWORD rcv_ms = 2000;
+    setsockopt(ctrl, SOL_SOCKET, SO_RCVTIMEO, (char *)&rcv_ms, sizeof(rcv_ms));
+#else
+    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+    setsockopt(ctrl, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+#endif
+
+    if (send(ctrl, SPDCHK_REPORT_REQ, strlen(SPDCHK_REPORT_REQ),
+             MSG_NOSIGNAL) < 0) {
+        log_info("CLIENT", "Phase 3: send failed — using local estimate");
+        sock_close(ctrl);
+        return bytes_sent;
+    }
+
+    /* Read response line: "SPDCHK_REPORT <bytes> <duration_ms>\n" */
+    char resp[128] = {0};
+    int  ri        = 0;
+    char c;
+    while (ri < (int)sizeof(resp) - 1) {
+        ssize_t r = recv(ctrl, &c, 1, 0);
+        if (r <= 0) break;
+        resp[ri++] = c;
+        if (c == '\n') break;
+    }
+    resp[ri] = '\0';
+    sock_close(ctrl);
+
+    unsigned long long srv_bytes = 0;
+    unsigned int       dur_ms    = 0;
+    if (ri > 0 && sscanf(resp, "SPDCHK_REPORT %llu %u", &srv_bytes, &dur_ms) >= 1) {
+        *is_verified = 1;
+        log_info("CLIENT", "Phase 3: server report — %llu bytes in %u ms",
+                 srv_bytes, dur_ms);
+        return (uint64_t)srv_bytes;
+    }
+
+    log_info("CLIENT", "Phase 3: no valid report received — using local estimate");
+    return bytes_sent;
+}
+
+/* ------------------------------------------------------------------ */
 /* Stream Manager helpers                                              */
 /* ------------------------------------------------------------------ */
 
@@ -389,11 +465,10 @@ static int run_bandwidth_dss(const struct client_args *args,
     log_info("CLIENT", "DSS: steady state — %d optimal stream(s) of %d probed",
              optimal_n, n);
 
-    out->throughput_gbps  = ((double)total_bytes * 8.0)
-                          / (double)args->duration / 1.0e9;
     out->duration_sec     = args->duration;
     out->parallel_streams = optimal_n;          /* effective count (throughput basis) */
     out->optimal_streams  = (n > optimal_n) ? n : 0; /* probed count; 0 = no extra probe */
+    out->bytes_sent       = (uint64_t)total_bytes;   /* raw count; throughput computed after Phase 3 */
     return 0;
 }
 
@@ -504,16 +579,35 @@ int run_client_ex(const struct client_args *args, struct run_client_result *resu
             return -1;
         }
 
-        bw.throughput_gbps  = ((double)total_bytes * 8.0)
-                            / (double)args->duration / 1.0e9;
         bw.duration_sec     = args->duration;
         bw.parallel_streams = args->streams;
         bw.optimal_streams  = 0;
+        bw.bytes_sent       = (uint64_t)total_bytes; /* throughput computed after Phase 3 */
     }
 
     /* Stop the live display before printing the final statistics block. */
     g_telemetry = NULL;
     telemetry_stop(&tel, &tel_tid);
+
+    /* ------------------------------------------------------------------ */
+    /* Phase 3: Request server-verified byte count                         */
+    /* The client waits up to 2 s for the server report; falls back to     */
+    /* the local byte count and marks the result as "Estimated" on timeout.*/
+    /* ------------------------------------------------------------------ */
+    {
+        int      is_verified    = 0;
+        uint64_t bytes_received = request_server_report(args, bw.bytes_sent,
+                                                        &is_verified);
+        bw.bytes_received    = bytes_received;
+        bw.is_verified       = is_verified;
+        bw.reliability_score = (bw.bytes_sent > 0)
+                             ? ((double)bytes_received / (double)bw.bytes_sent) * 100.0
+                             : 100.0;
+        bw.throughput_gbps   = (bw.duration_sec > 0)
+                             ? ((double)bytes_received * 8.0)
+                               / (double)bw.duration_sec / 1.0e9
+                             : 0.0;
+    }
 
     struct ping_result ping = {
         .avg_latency_ms  = 0.0,
@@ -521,9 +615,11 @@ int run_client_ex(const struct client_args *args, struct run_client_result *resu
     };
 
     if (result) {
-        result->throughput_gbps = bw.throughput_gbps;
-        result->avg_latency_ms  = 0.0;
-        result->packet_loss_pct = 0.0;
+        result->throughput_gbps   = bw.throughput_gbps;
+        result->avg_latency_ms    = 0.0;
+        result->packet_loss_pct   = 0.0;
+        result->reliability_score = bw.reliability_score;
+        result->is_verified       = bw.is_verified;
     }
 
     FILE *out = stdout;

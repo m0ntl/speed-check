@@ -67,10 +67,12 @@ void print_metrics(FILE *out, const struct metrics_result *r)
 void print_bandwidth(FILE *out, const struct bandwidth_result *bw)
 {
     fprintf(out, "\n--- bandwidth statistics ---\n");
+
+    const char *tag = bw->is_verified ? "(Verified)" : "(Estimated)";
     if (bw->throughput_gbps >= 1.0)
-        fprintf(out, "Throughput : %.3f Gbps\n", bw->throughput_gbps);
+        fprintf(out, "Throughput : %.3f Gbps %s\n", bw->throughput_gbps, tag);
     else
-        fprintf(out, "Throughput : %.1f Mbps\n", bw->throughput_gbps * 1000.0);
+        fprintf(out, "Throughput : %.1f Mbps %s\n", bw->throughput_gbps * 1000.0, tag);
     fprintf(out, "Duration   : %d s\n", bw->duration_sec);
     if (bw->optimal_streams == 0)
         fprintf(out, "Streams    : %d\n", bw->parallel_streams);
@@ -79,6 +81,15 @@ void print_bandwidth(FILE *out, const struct bandwidth_result *bw)
     else
         fprintf(out, "Streams    : %d optimal (of %d probed, DSS)\n",
                 bw->parallel_streams, bw->optimal_streams);
+
+    if (bw->is_verified) {
+        const char *rating;
+        if (bw->reliability_score >= 99.9)      rating = "Optimal";
+        else if (bw->reliability_score >= 95.0) rating = "Stable";
+        else if (bw->reliability_score >= 90.0) rating = "Degraded";
+        else                                    rating = "Unstable";
+        fprintf(out, "Reliability: %.1f%% (%s)\n", bw->reliability_score, rating);
+    }
 }
 
 void print_results_json(FILE *out, const struct ping_result *ping,
@@ -97,12 +108,18 @@ void print_results_json(FILE *out, const struct ping_result *ping,
     fprintf(out, "  },\n");
     fprintf(out, "  \"bandwidth_stats\": {\n");
     fprintf(out, "    \"throughput_gbps\": %.3f,\n", bw->throughput_gbps);
+    fprintf(out, "    \"verified\": %s,\n", bw->is_verified ? "true" : "false");
     fprintf(out, "    \"duration_sec\": %d,\n",       bw->duration_sec);
     fprintf(out, "    \"parallel_streams\": %d",       bw->parallel_streams);
     if (bw->optimal_streams > 0)
-        fprintf(out, ",\n    \"dss_probed_streams\": %d\n", bw->optimal_streams);
-    else
-        fprintf(out, "\n");
-    fprintf(out, "  }\n");
+        fprintf(out, ",\n    \"dss_probed_streams\": %d", bw->optimal_streams);
+    if (bw->is_verified) {
+        fprintf(out, ",\n    \"reliability_score\": %.1f", bw->reliability_score);
+        fprintf(out, ",\n    \"bytes_sent\": %llu",
+                (unsigned long long)bw->bytes_sent);
+        fprintf(out, ",\n    \"bytes_received\": %llu",
+                (unsigned long long)bw->bytes_received);
+    }
+    fprintf(out, "\n  }\n");
     fprintf(out, "}\n");
 }

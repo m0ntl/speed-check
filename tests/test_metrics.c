@@ -175,6 +175,7 @@ static void test_json_formatting(void)
         .duration_sec     = 10,
         .parallel_streams = 4,
         .optimal_streams  = 0,   /* static mode: no dss_probed_streams field */
+        .is_verified      = 0,
     };
     const char *out = capture_json(&ping, &bw);
     ASSERT_CONTAINS(out, "\"timestamp\"");
@@ -183,7 +184,9 @@ static void test_json_formatting(void)
     ASSERT_CONTAINS(out, "\"avg_latency_ms\"");
     ASSERT_CONTAINS(out, "\"packet_loss_pct\"");
     ASSERT_CONTAINS(out, "\"throughput_gbps\"");
+    ASSERT_CONTAINS(out, "\"verified\"");
     ASSERT_NOT_CONTAINS(out, "dss_probed_streams");
+    ASSERT_NOT_CONTAINS(out, "\"reliability_score\"");
 }
 
 static void test_json_dss_probed_streams_field(void)
@@ -194,9 +197,118 @@ static void test_json_dss_probed_streams_field(void)
         .duration_sec     = 10,
         .parallel_streams = 3,
         .optimal_streams  = 6,   /* probe ran: field must appear */
+        .is_verified      = 0,
     };
     const char *out = capture_json(&ping, &bw);
     ASSERT_CONTAINS(out, "\"dss_probed_streams\"");
+}
+
+/* ------------------------------------------------------------------ */
+/* Verified / Unverified display                                        */
+/* ------------------------------------------------------------------ */
+
+static void test_bandwidth_verified(void)
+{
+    struct bandwidth_result bw = {
+        .throughput_gbps  = 1.0,
+        .duration_sec     = 10,
+        .parallel_streams = 4,
+        .optimal_streams  = 0,
+        .bytes_sent       = 1000000000ULL,
+        .bytes_received   = 982000000ULL,
+        .reliability_score = 98.2,
+        .is_verified      = 1,
+    };
+    const char *out = capture_bandwidth(&bw);
+    ASSERT_CONTAINS(out, "Verified");
+    ASSERT_CONTAINS(out, "Reliability");
+    ASSERT_CONTAINS(out, "98.2%");
+    ASSERT_CONTAINS(out, "Stable");
+}
+
+static void test_bandwidth_unverified(void)
+{
+    struct bandwidth_result bw = {
+        .throughput_gbps  = 1.0,
+        .duration_sec     = 10,
+        .parallel_streams = 4,
+        .optimal_streams  = 0,
+        .is_verified      = 0,
+    };
+    const char *out = capture_bandwidth(&bw);
+    ASSERT_CONTAINS(out, "Estimated");
+    ASSERT_NOT_CONTAINS(out, "Reliability");
+}
+
+/* ------------------------------------------------------------------ */
+/* Reliability rating thresholds                                        */
+/* ------------------------------------------------------------------ */
+
+static void test_reliability_optimal(void)
+{
+    struct bandwidth_result bw = {
+        .throughput_gbps   = 1.0,
+        .duration_sec      = 10,
+        .parallel_streams  = 4,
+        .reliability_score = 100.0,
+        .is_verified       = 1,
+    };
+    ASSERT_CONTAINS(capture_bandwidth(&bw), "Optimal");
+}
+
+static void test_reliability_stable(void)
+{
+    struct bandwidth_result bw = {
+        .throughput_gbps   = 1.0,
+        .duration_sec      = 10,
+        .parallel_streams  = 4,
+        .reliability_score = 95.0,
+        .is_verified       = 1,
+    };
+    ASSERT_CONTAINS(capture_bandwidth(&bw), "Stable");
+}
+
+static void test_reliability_degraded(void)
+{
+    struct bandwidth_result bw = {
+        .throughput_gbps   = 1.0,
+        .duration_sec      = 10,
+        .parallel_streams  = 4,
+        .reliability_score = 92.5,
+        .is_verified       = 1,
+    };
+    ASSERT_CONTAINS(capture_bandwidth(&bw), "Degraded");
+}
+
+static void test_reliability_unstable(void)
+{
+    struct bandwidth_result bw = {
+        .throughput_gbps   = 1.0,
+        .duration_sec      = 10,
+        .parallel_streams  = 4,
+        .reliability_score = 85.0,
+        .is_verified       = 1,
+    };
+    ASSERT_CONTAINS(capture_bandwidth(&bw), "Unstable");
+}
+
+/* JSON verified fields appear only when is_verified = 1 */
+static void test_json_verified_fields(void)
+{
+    struct ping_result ping = { .avg_latency_ms = 5.0, .packet_loss_pct = 0.0 };
+    struct bandwidth_result bw = {
+        .throughput_gbps   = 1.0,
+        .duration_sec      = 10,
+        .parallel_streams  = 4,
+        .bytes_sent        = 100000000ULL,
+        .bytes_received    = 98200000ULL,
+        .reliability_score = 98.2,
+        .is_verified       = 1,
+    };
+    const char *out = capture_json(&ping, &bw);
+    ASSERT_CONTAINS(out, "\"verified\"");
+    ASSERT_CONTAINS(out, "\"reliability_score\"");
+    ASSERT_CONTAINS(out, "\"bytes_received\"");
 }
 
 /* ------------------------------------------------------------------ */
@@ -215,4 +327,11 @@ void run_metrics_tests(void)
     run_test("metrics_all_lost",              test_metrics_all_lost);
     run_test("json_formatting",               test_json_formatting);
     run_test("json_dss_probed_streams_field", test_json_dss_probed_streams_field);
+    run_test("bandwidth_verified_display",    test_bandwidth_verified);
+    run_test("bandwidth_unverified_display",  test_bandwidth_unverified);
+    run_test("reliability_optimal",           test_reliability_optimal);
+    run_test("reliability_stable",            test_reliability_stable);
+    run_test("reliability_degraded",          test_reliability_degraded);
+    run_test("reliability_unstable",          test_reliability_unstable);
+    run_test("json_verified_fields",          test_json_verified_fields);
 }

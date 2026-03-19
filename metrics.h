@@ -2,6 +2,7 @@
 #define METRICS_H
 
 #include <stdio.h>
+#include <stdint.h>
 
 /* ICMP phase summary */
 struct ping_result {
@@ -11,10 +12,14 @@ struct ping_result {
 
 /* TCP throughput phase summary */
 struct bandwidth_result {
-    double throughput_gbps;
-    int    duration_sec;
-    int    parallel_streams; /* streams used for throughput (DSS optimal, or static count) */
-    int    optimal_streams;  /* total streams DSS probed; 0 in static mode or when no extra probe ran */
+    double   throughput_gbps;
+    int      duration_sec;
+    int      parallel_streams; /* streams used for throughput (DSS optimal, or static count) */
+    int      optimal_streams;  /* total streams DSS probed; 0 in static mode or when no extra probe ran */
+    uint64_t bytes_sent;       /* bytes client pushed to the kernel                           */
+    uint64_t bytes_received;   /* bytes server confirmed received; 0 when unverified           */
+    double   reliability_score;/* (bytes_received / bytes_sent) * 100; 0 when unverified      */
+    int      is_verified;      /* 1 = server confirmed via Phase 3; 0 = local estimate         */
 };
 
 /*

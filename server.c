@@ -19,6 +19,10 @@
 #include "logger.h"
 #include "spdchk.h"
 
+#ifndef _WIN32
+#  include <time.h>
+#endif
+
 #define DRAIN_BUF_SIZE (64 * 1024)
 
 /* Maximum number of simultaneous client threads.  Connections beyond this
@@ -33,6 +37,66 @@ struct conn_arg {
     struct sockaddr_in peer;
     int                max_duration;
 };
+
+/* ------------------------------------------------------------------ */
+/* Session tracking — Phase 3 Verified Receiver-Side Throughput        */
+/* Each test run from a unique client IP gets one session slot.        */
+/* ------------------------------------------------------------------ */
+
+#define MAX_SESSIONS 64
+
+typedef struct {
+    uint32_t   ip;            /* client IP (network byte order); 0 = free */
+    long long  total_bytes;   /* accumulates via __atomic_fetch_add        */
+    int        stream_count;  /* active data streams; via __atomic ops     */
+    struct timespec created_at;
+} sess_t;
+
+static sess_t          g_sessions[MAX_SESSIONS];
+static pthread_mutex_t g_sess_mtx = PTHREAD_MUTEX_INITIALIZER;
+
+/*
+ * sess_acquire — find or create a session for the given client IP.
+ * Increments stream_count.  Returns session index, or -1 if all slots full.
+ */
+static int sess_acquire(uint32_t ip)
+{
+    pthread_mutex_lock(&g_sess_mtx);
+    int free_slot = -1;
+    for (int i = 0; i < MAX_SESSIONS; i++) {
+        if (g_sessions[i].ip == ip) {
+            int sc = __atomic_load_n(&g_sessions[i].stream_count, __ATOMIC_RELAXED);
+            if (sc > 0) {
+                /* active session: join it */
+                __atomic_fetch_add(&g_sessions[i].stream_count, 1, __ATOMIC_RELAXED);
+                pthread_mutex_unlock(&g_sess_mtx);
+                return i;
+            }
+            /* stale session (stream_count == 0): reuse the slot */
+            free_slot = i;
+            break;
+        }
+        if (free_slot < 0 && g_sessions[i].ip == 0)
+            free_slot = i;
+    }
+    if (free_slot < 0) {
+        pthread_mutex_unlock(&g_sess_mtx);
+        return -1;
+    }
+    __atomic_store_n(&g_sessions[free_slot].total_bytes,  (long long)0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_sessions[free_slot].stream_count, (int)1,       __ATOMIC_RELAXED);
+    clock_gettime(CLOCK_MONOTONIC, &g_sessions[free_slot].created_at);
+    g_sessions[free_slot].ip = ip;
+    pthread_mutex_unlock(&g_sess_mtx);
+    return free_slot;
+}
+
+/* Decrement active stream count for a session slot. */
+static void sess_release(int idx)
+{
+    if (idx >= 0)
+        __atomic_fetch_sub(&g_sessions[idx].stream_count, 1, __ATOMIC_RELAXED);
+}
 
 static void *handle_connection(void *arg)
 {
@@ -60,7 +124,7 @@ static void *handle_connection(void *arg)
     }
 
     /* -------------------------------------------------------------- */
-    /* Version handshake — detect "SPDCHK_VER <ver>\n" greeting.      */
+    /* Greeting detection: version handshake or Phase 3 report request  */
     /* -------------------------------------------------------------- */
     char    peek[32];
     ssize_t pn = recv(fd, peek, sizeof(peek) - 1, MSG_PEEK);
@@ -107,18 +171,78 @@ static void *handle_connection(void *arg)
                      addr_str, ver_buf, SPDCHK_VERSION);
         }
         sock_close(fd);
+        pthread_mutex_lock(&g_conn_mtx);
+        g_conn_count--;
+        pthread_mutex_unlock(&g_conn_mtx);
         return NULL;
     }
 
+    if (pn >= 17 && memcmp(peek, "SPDCHK_REPORT_REQ", 17) == 0) {
+        /* Consume the greeting line */
+        char ch;
+        for (int li = 0; li < 32; li++) {
+            if (recv(fd, &ch, 1, 0) <= 0) break;
+            if (ch == '\n') break;
+        }
+
+        /* Security: only return data accumulated from the requesting IP. */
+        uint32_t  peer_ip = (uint32_t)peer.sin_addr.s_addr;
+        long long bytes   = 0;
+        uint32_t  dur_ms  = 0;
+
+        pthread_mutex_lock(&g_sess_mtx);
+        for (int i = 0; i < MAX_SESSIONS; i++) {
+            if (g_sessions[i].ip == peer_ip) {
+                bytes = __atomic_load_n(&g_sessions[i].total_bytes, __ATOMIC_RELAXED);
+                struct timespec now;
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                long long elapsed_ms =
+                    (now.tv_sec  - g_sessions[i].created_at.tv_sec)  * 1000LL +
+                    (now.tv_nsec - g_sessions[i].created_at.tv_nsec) / 1000000LL;
+                dur_ms = (uint32_t)(elapsed_ms > 0 ? elapsed_ms : 0);
+                g_sessions[i].ip = 0;   /* free slot for reuse */
+                break;
+            }
+        }
+        pthread_mutex_unlock(&g_sess_mtx);
+
+        char resp[128];
+        int  rlen = snprintf(resp, sizeof(resp), "SPDCHK_REPORT %lld %u\n",
+                             (long long)bytes, (unsigned)dur_ms);
+        if (rlen > 0 && rlen < (int)sizeof(resp))
+            send(fd, resp, (size_t)rlen, MSG_NOSIGNAL);
+        log_info("SERVER",
+                 "Phase 3 report sent to %s: %lld bytes in %u ms",
+                 addr_str, (long long)bytes, (unsigned)dur_ms);
+        sock_close(fd);
+        pthread_mutex_lock(&g_conn_mtx);
+        g_conn_count--;
+        pthread_mutex_unlock(&g_conn_mtx);
+        return NULL;
+    }
+
+    /* -------------------------------------------------------------- */
+    /* Data drain — bandwidth sink with per-IP session accumulation    */
+    /* -------------------------------------------------------------- */
+    uint32_t peer_ip  = (uint32_t)peer.sin_addr.s_addr;
+    int      sess_idx = sess_acquire(peer_ip);
+
     char *buf = malloc(DRAIN_BUF_SIZE);
     if (!buf) {
+        if (sess_idx >= 0) sess_release(sess_idx);
         sock_close(fd);
+        pthread_mutex_lock(&g_conn_mtx);
+        g_conn_count--;
+        pthread_mutex_unlock(&g_conn_mtx);
         return NULL;
     }
 
     ssize_t n;
-    while ((n = recv(fd, buf, DRAIN_BUF_SIZE, 0)) > 0)
-        ; /* drain — this is the bandwidth sink */
+    while ((n = recv(fd, buf, DRAIN_BUF_SIZE, 0)) > 0) {
+        if (sess_idx >= 0)
+            __atomic_fetch_add(&g_sessions[sess_idx].total_bytes,
+                               (long long)n, __ATOMIC_RELAXED);
+    }
 
 #ifdef _WIN32
     if (n < 0 && WSAGetLastError() == WSAETIMEDOUT)
@@ -128,6 +252,7 @@ static void *handle_connection(void *arg)
         log_info("SERVER", "client %s: max-duration reached, closing", addr_str);
 
     free(buf);
+    if (sess_idx >= 0) sess_release(sess_idx);
     log_info("SERVER", "client %s disconnected", addr_str);
     sock_close(fd);
 

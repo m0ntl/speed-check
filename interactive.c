@@ -523,11 +523,23 @@ static void render_bw_results(const struct run_client_result *r,
     } else if (failed) {
         printf("  " A_YELLOW "Bandwidth test failed.\n" A_RESET);
     } else {
-        printf("  Throughput:  " A_BOLD "%.3f Gbps\n" A_RESET, r->throughput_gbps);
+        const char *tput_color = r->is_verified ? A_CYAN : A_YELLOW;
+        const char *tput_tag   = r->is_verified ? "(Verified)" : "(Estimated)";
+        printf("  Throughput:  %s" A_BOLD "%.3f Gbps" A_RESET " %s\n",
+               tput_color, r->throughput_gbps, tput_tag);
         printf("  Avg RTT:     " A_BOLD "%.2f ms\n"   A_RESET, r->avg_latency_ms);
         printf("  Packet loss: " A_BOLD "%.1f%%\n"    A_RESET, r->packet_loss_pct);
         printf("  Streams:     " A_BOLD "%d\n"        A_RESET, streams);
         printf("  Duration:    " A_BOLD "%d s\n"      A_RESET, duration);
+        if (r->is_verified) {
+            const char *rating;
+            if (r->reliability_score >= 99.9)      rating = "Optimal";
+            else if (r->reliability_score >= 95.0) rating = "Stable";
+            else if (r->reliability_score >= 90.0) rating = "Degraded";
+            else                                   rating = "Unstable";
+            printf("  Reliability: " A_BOLD "%.1f%% (%s)\n" A_RESET,
+                   r->reliability_score, rating);
+        }
     }
 
     printf(THIN_LINE);
