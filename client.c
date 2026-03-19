@@ -17,7 +17,6 @@
 #endif
 
 #include "client.h"
-#include "icmp.h"
 #include "logger.h"
 #include "metrics.h"
 #include "telemetry.h"
@@ -416,19 +415,8 @@ int run_client_ex(const struct client_args *args, struct run_client_result *resu
     }
 
     /* ------------------------------------------------------------------ */
-    /* Phase 1: ICMP reachability                                          */
+    /* Phase 1 (ICMP reachability) removed — TCP test runs directly.       */
     /* ------------------------------------------------------------------ */
-    log_info("CLIENT", "Phase 1 — ICMP ping (%d packets) → %s",
-             args->ping_count, args->target_ip);
-
-    struct icmp_stats icmp_result;
-    int icmp_rc = icmp_ping(args->target_ip, args->ping_count, &icmp_result);
-    if (icmp_rc != 0) {
-        log_error("CLIENT", "aborting: %s",
-                  icmp_rc == -2 ? "insufficient privileges for raw socket"
-                                : "target unreachable");
-        return icmp_rc; /* -1 = unreachable, -2 = EPERM/EACCES */
-    }
 
     /* ------------------------------------------------------------------ */
     /* Phase 2: Parallel TCP bandwidth measurement                         */
@@ -440,7 +428,7 @@ int run_client_ex(const struct client_args *args, struct run_client_result *resu
     spdchk_telemetry_t tel = {
         .total_duration   = args->duration,
         .parallel_streams = args->dss_mode ? 1 : args->streams,
-        .avg_latency_ms   = icmp_result.avg_latency_ms,
+        .avg_latency_ms   = 0.0,
     };
     pthread_t tel_tid;
     g_telemetry = &tel;
@@ -528,14 +516,14 @@ int run_client_ex(const struct client_args *args, struct run_client_result *resu
     telemetry_stop(&tel, &tel_tid);
 
     struct ping_result ping = {
-        .avg_latency_ms  = icmp_result.avg_latency_ms,
-        .packet_loss_pct = icmp_result.packet_loss_pct,
+        .avg_latency_ms  = 0.0,
+        .packet_loss_pct = 0.0,
     };
 
     if (result) {
         result->throughput_gbps = bw.throughput_gbps;
-        result->avg_latency_ms  = icmp_result.avg_latency_ms;
-        result->packet_loss_pct = icmp_result.packet_loss_pct;
+        result->avg_latency_ms  = 0.0;
+        result->packet_loss_pct = 0.0;
     }
 
     FILE *out = stdout;
