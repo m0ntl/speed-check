@@ -4,7 +4,12 @@
 #include <time.h>
 #include <unistd.h>
 #include <signal.h>
+#ifndef _WIN32
 #include <termios.h>
+#else
+#include <windows.h>
+#include "terminal_win.h"
+#endif
 
 #include "interactive.h"
 #include "client.h"
@@ -93,8 +98,25 @@ static void get_timestamp(char *buf, size_t len)
 }
 
 /* ================================================================== */
-/* Terminal raw mode (termios)                                         */
+/* Terminal raw mode (termios on Linux, Win32 console API on Windows)  */
 /* ================================================================== */
+#ifdef _WIN32
+
+/* On Windows, all state is managed inside terminal_win.c. */
+static void setup_terminal_raw_mode(void) { win_set_raw_mode(); }
+static void restore_terminal_mode(void)   { win_restore_mode(); }
+
+static void sig_cleanup(int signo)
+{
+    (void)signo;
+    win_restore_mode();
+    const char msg[] = "\nInterrupted.\n";
+    _write(STDOUT_FILENO, msg, (unsigned int)(sizeof(msg) - 1));
+    _exit(1);
+}
+
+#else /* POSIX ---------------------------------------------------- */
+
 static struct termios orig_termios;
 static int            raw_mode_active = 0;
 
@@ -131,6 +153,8 @@ static void sig_cleanup(int signo)
     _exit(1);
 }
 
+#endif /* _WIN32 */
+
 /* ================================================================== */
 /* Input capture                                                       */
 /* ================================================================== */
@@ -155,6 +179,20 @@ static int capture_input(void)
         return -1;
 
     if (c == 0x1B) {
+#ifdef _WIN32
+        /*
+         * With ENABLE_VIRTUAL_TERMINAL_INPUT active, Windows sends the same
+         * CSI sequences as Linux.  Use WaitForSingleObject to peek for the
+         * remaining two bytes within 100 ms before declaring a bare ESC.
+         */
+        HANDLE hin = GetStdHandle(STD_INPUT_HANDLE);
+        unsigned char seq[2] = {0, 0};
+        if (WaitForSingleObject(hin, 100) == WAIT_OBJECT_0) {
+            if (_read(STDIN_FILENO, &seq[0], 1) == 1
+                    && WaitForSingleObject(hin, 50) == WAIT_OBJECT_0)
+                _read(STDIN_FILENO, &seq[1], 1);
+        }
+#else
         /* Temporarily lower timeout to 100 ms to peek for CSI sequence. */
         struct termios t;
         tcgetattr(STDIN_FILENO, &t);
@@ -169,7 +207,7 @@ static int capture_input(void)
         t.c_cc[VMIN]  = 1;
         t.c_cc[VTIME] = 0;
         tcsetattr(STDIN_FILENO, TCSANOW, &t);
-
+#endif
         if (seq[0] == '[') {
             if (seq[1] == 'A') return KEY_UP;
             if (seq[1] == 'B') return KEY_DOWN;

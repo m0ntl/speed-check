@@ -1,15 +1,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <errno.h>
-#include <fcntl.h>
-#include <poll.h>
 #include <pthread.h>
 #include <time.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+
+/* Platform-specific network headers (SDD §2.3). */
+#include "compat_win.h"   /* sock_close, MSG_NOSIGNAL, winsock2 on Windows */
+#ifndef _WIN32
+#  include <unistd.h>
+#  include <fcntl.h>
+#  include <poll.h>
+#  include <sys/socket.h>
+#  include <netinet/in.h>
+#  include <arpa/inet.h>
+#endif
 
 #include "client.h"
 #include "icmp.h"
@@ -48,13 +53,19 @@ int client_check_server_version(const char *target_ip, int port, int dss_mode)
     if (connect_timed(sock, (struct sockaddr *)&addr,
                       sizeof(addr), CONNECT_TIMEOUT_SEC) < 0) {
         log_error("CLIENT", "version check: cannot reach server: %s", strerror(errno));
-        close(sock);
+        sock_close(sock);
         return -1;
     }
 
-    /* 5-second receive timeout so an old server does not block forever. */
+    /* 5-second receive timeout so an old server does not block forever.
+     * Winsock SO_RCVTIMEO takes DWORD milliseconds; POSIX takes timeval. */
+#ifdef _WIN32
+    DWORD rcv_ms = 5000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&rcv_ms, sizeof(rcv_ms));
+#else
     struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+#endif
 
     /* Send greeting. */
     char greeting[64];
@@ -66,7 +77,7 @@ int client_check_server_version(const char *target_ip, int port, int dss_mode)
                  "SPDCHK_VER " SPDCHK_VERSION "\n");
     if (send(sock, greeting, strlen(greeting), MSG_NOSIGNAL) < 0) {
         log_error("CLIENT", "version-check send: %s", strerror(errno));
-        close(sock);
+        sock_close(sock);
         return -1;
     }
 
@@ -81,7 +92,7 @@ int client_check_server_version(const char *target_ip, int port, int dss_mode)
         if (c == '\n') break;
     }
     resp[ri] = '\0';
-    close(sock);
+    sock_close(sock);
 
     if (strncmp(resp, "OK", 2) == 0)
         return 0;
@@ -117,10 +128,48 @@ struct stream_arg {
     long long   bytes_sent;  /* output: -1 on connect failure */
 };
 
-/* Non-blocking connect with a poll()-based timeout. */
+/*
+ * connect_timed — non-blocking connect with a timeout.
+ *
+ * On POSIX: fcntl O_NONBLOCK + poll().
+ * On Windows: ioctlsocket FIONBIO + WSAPoll() (SDD §2.3).
+ */
 static int connect_timed(int fd, const struct sockaddr *addr,
                           socklen_t addrlen, int timeout_sec)
 {
+#ifdef _WIN32
+    u_long nb = 1;
+    if (ioctlsocket((SOCKET)fd, FIONBIO, &nb) == SOCKET_ERROR)
+        return -1;
+
+    int rc = connect(fd, addr, addrlen);
+    if (rc == 0) {
+        nb = 0;
+        ioctlsocket((SOCKET)fd, FIONBIO, &nb);
+        return 0;
+    }
+    if (WSAGetLastError() != WSAEWOULDBLOCK) {
+        nb = 0;
+        ioctlsocket((SOCKET)fd, FIONBIO, &nb);
+        return -1;
+    }
+
+    WSAPOLLFD pfd = { (SOCKET)fd, POLLOUT, 0 };
+    int r = WSAPoll(&pfd, 1, timeout_sec * 1000);
+    if (r <= 0) {
+        nb = 0;
+        ioctlsocket((SOCKET)fd, FIONBIO, &nb);
+        return -1;
+    }
+
+    int err    = 0;
+    int errlen = sizeof(err);
+    getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *)&err, &errlen);
+    nb = 0;
+    ioctlsocket((SOCKET)fd, FIONBIO, &nb);
+    return (err == 0) ? 0 : -1;
+
+#else  /* POSIX */
     int flags = fcntl(fd, F_GETFL, 0);
     if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
         return -1;
@@ -148,6 +197,7 @@ static int connect_timed(int fd, const struct sockaddr *addr,
 
     fcntl(fd, F_SETFL, flags); /* restore blocking mode */
     return 0;
+#endif
 }
 
 static void *stream_worker(void *arg)
@@ -171,14 +221,14 @@ static void *stream_worker(void *arg)
                       sizeof(addr), CONNECT_TIMEOUT_SEC) < 0) {
         log_error("CLIENT", "stream %d: connect failed: %s",
                   ctx->stream_id, strerror(errno));
-        close(sock);
+        sock_close(sock);
         __atomic_store_n(&ctx->bytes_sent, (long long)-1, __ATOMIC_RELAXED);
         return NULL;
     }
 
     char *buf = malloc(SEND_BUF_SIZE);
     if (!buf) {
-        close(sock);
+        sock_close(sock);
         __atomic_store_n(&ctx->bytes_sent, (long long)-1, __ATOMIC_RELAXED);
         return NULL;
     }
@@ -196,7 +246,7 @@ static void *stream_worker(void *arg)
     }
 
     free(buf);
-    close(sock);
+    sock_close(sock);
     return NULL;
 }
 

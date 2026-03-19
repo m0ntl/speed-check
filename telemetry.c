@@ -5,7 +5,14 @@
 #include <time.h>
 #include <unistd.h>
 #include <signal.h>
+#ifndef _WIN32
 #include <sys/ioctl.h>
+#else
+#ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 #include "telemetry.h"
 
@@ -75,12 +82,22 @@ static void *telemetry_thread(void *arg)
     if (!isatty(STDOUT_FILENO))
         return NULL;
 
-    /* --- Terminal geometry (SDD §4.3 "ioctl TIOCGWINSZ") --- */
+    /* --- Terminal geometry (SDD §4.3) --- */
     int term_width = 80;
     {
+#ifdef _WIN32
+        CONSOLE_SCREEN_BUFFER_INFO csbi;
+        HANDLE hout = GetStdHandle(STD_OUTPUT_HANDLE);
+        if (hout != INVALID_HANDLE_VALUE
+                && GetConsoleScreenBufferInfo(hout, &csbi)) {
+            int w = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+            if (w > 0) term_width = w;
+        }
+#else
         struct winsize ws;
         if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
             term_width = (int)ws.ws_col;
+#endif
     }
 
     /* Progress bar width: fit between "Progress: [" (12) and "] XXX%" (6),

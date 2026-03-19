@@ -1,0 +1,84 @@
+This System Design Document (SDD) outlines the architectural additions required to port the **spdchk** utility to Windows. To maintain the integrity of the existing Linux implementation, we will employ a **Platform Abstraction Layer (PAL)** pattern, introducing Windows-specific source files that mirror the functionality of the Linux counterparts.
+
+---
+
+## 1. Architectural Strategy
+The Windows port will focus on three primary technical hurdles: **Winsock2** initialization, **Terminal Emulation** (replacing `termios`), and **High-Precision Timing**. 
+
+* **File Isolation:** We will introduce `*_win.c` files. The build system (Makefile/CMake) will conditionally compile these based on the target OS.
+* **Feature Parity:** The Windows client will support the same two-stage (ICMP + TCP) test, DSS (Dynamic Stream Scaling), and the interactive TUI.
+* **Privilege Management:** On Windows, `CAP_NET_RAW` equivalents require the application to be run as **Administrator** to open raw ICMP sockets.
+
+---
+
+## 2. New Component Specifications
+
+### 2.1 Networking & ICMP (`icmp_win.c`, `net_win.h`)
+Windows requires explicit initialization of the networking stack via `WSAStartup()`.
+
+* **Implementation:** `icmp_ping()` will be re-implemented using the Winsock2 Raw Sockets API.
+* **Constraint:** Windows Raw Sockets have strict limitations. If the user is not Administrator, the socket call will return `WSAEACCES`, which we will map to the `-2` return code (Insufficient Privileges) to maintain UI consistency.
+* **Checksum:** The Internet Checksum logic from `icmp.c` is portable and will be moved to a shared `utils.h` or duplicated to avoid touching the Linux source.
+
+### 2.2 Terminal & TUI (`terminal_win.c`, `interactive_win.c`)
+The Linux version relies on `termios.h` for raw mode and ANSI escape codes. Modern Windows 10+ consoles support ANSI via "Virtual Terminal Sequences."
+
+* **Raw Mode:** Instead of `tcsetattr`, we will use `SetConsoleMode` with flags `ENABLE_VIRTUAL_TERMINAL_PROCESSING` and `ENABLE_PROCESSED_INPUT` disabled.
+* **Window Scaling:** `ioctl(TIOCGWINSZ)` will be replaced by `GetConsoleScreenBufferInfo` to determine terminal width for the telemetry bars.
+
+### 2.3 Threading & Atomics (`compat_win.h`)
+To avoid refactoring the Linux `pthread` implementation:
+* **Threads:** We will use a lightweight shim or the `winpthreads` library (if using MinGW) to keep `client.c` logic identical. If native, we map `pthread_create` to `_beginthreadex`.
+* **Atomics:** Windows `InterlockedExchangeAdd64` will be used to ensure the telemetry's `total_bytes` counter remains thread-safe and performant.
+
+---
+
+## 3. New File Structure
+
+| New File | Purpose |
+| :--- | :--- |
+| `win_main.c` | Windows entry point. Calls `WSAStartup()`, then invokes `interactive_main()`. |
+| `icmp_win.c` | Winsock-based ICMP implementation. Implements `icmp_ping()`. |
+| `terminal_win.c` | Implements `set_raw_mode()` and `restore_mode()` using Win32 API. |
+| `compat_win.h` | Macros mapping `usleep` to `Sleep`, `strncasecmp` to `_strnicmp`, and timing functions. |
+| `logger_win.c` | Replaces `syslog` with the Windows Event Log or a local `spdchk.log` file. |
+
+---
+
+## 4. Technical Detail: High-Precision Timing
+Since `spdchk` is a "high-precision" utility, the standard `GetTickCount()` is insufficient (15ms resolution). 
+
+
+
+On Windows, we will implement the timing logic using **QueryPerformanceCounter (QPC)**:
+$$\Delta t = \frac{Count_{end} - Count_{start}}{Frequency}$$
+This ensures microsecond-level accuracy for RTT and jitter calculations, matching the Linux `clock_gettime(CLOCK_MONOTONIC)` performance.
+
+---
+
+## 5. Execution Flow (Windows)
+
+1.  **Initialization:** `win_main.c` initializes Winsock 2.2 and checks for Administrator privileges.
+2.  **TUI Entry:** `interactive_main()` starts. The console is set to `ENABLE_VIRTUAL_TERMINAL_PROCESSING` to render the existing ANSI-based UI.
+3.  **Phase 1 (ICMP):** `icmp_win.c` attempts to open a `SOCK_RAW` socket. 
+    * If successful: Proceed to ping.
+    * If `WSAEACCES`: Return `-2`, UI displays "Insufficient privileges."
+4.  **Phase 2 (TCP):** Parallel `stream_worker` threads are spawned using Win32 threads. They use `send()` on standard TCP sockets to push data to the Linux/Windows server.
+5.  **Telemetry:** The telemetry thread uses `GetConsoleScreenBufferInfo` to scale the ASCII progress bar dynamically.
+
+---
+
+## 6. Build Configuration
+A new `Makefile.win` or an `ifndef _WIN32` block in the existing Makefile will be added:
+
+```makefile
+# Windows build flags
+ifeq ($(OS),Windows_NT)
+    LIBS = -lws2_32 -liphlpapi
+    SRCS += icmp_win.c terminal_win.c win_main.c
+else
+    # Existing Linux config
+    LIBS = -lpthread -lrt
+    SRCS += icmp.c main.c
+endif
+```

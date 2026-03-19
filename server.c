@@ -1,14 +1,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <errno.h>
 #include <signal.h>
 #include <pthread.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+
+/* Platform-specific network headers (SDD §2.3). */
+#include "compat_win.h"   /* sock_close, MSG_NOSIGNAL, winsock2 on Windows */
+#ifndef _WIN32
+#  include <unistd.h>
+#  include <sys/socket.h>
+#  include <sys/time.h>
+#  include <netinet/in.h>
+#  include <arpa/inet.h>
+#endif
 
 #include "server.h"
 #include "logger.h"
@@ -36,8 +41,15 @@ static void *handle_connection(void *arg)
              addr_str, ntohs(peer.sin_port));
 
     if (max_duration > 0) {
+        /* Winsock SO_RCVTIMEO takes DWORD milliseconds; POSIX takes timeval. */
+#ifdef _WIN32
+        DWORD rcv_ms = (DWORD)max_duration * 1000;
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
+                   (const char *)&rcv_ms, sizeof(rcv_ms));
+#else
         struct timeval tv = { .tv_sec = max_duration, .tv_usec = 0 };
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+#endif
     }
 
     /* -------------------------------------------------------------- */
@@ -86,13 +98,13 @@ static void *handle_connection(void *arg)
             log_info("SERVER", "rejected %s: version mismatch (client=%s server=%s)",
                      addr_str, ver_buf, SPDCHK_VERSION);
         }
-        close(fd);
+        sock_close(fd);
         return NULL;
     }
 
     char *buf = malloc(DRAIN_BUF_SIZE);
     if (!buf) {
-        close(fd);
+        sock_close(fd);
         return NULL;
     }
 
@@ -100,12 +112,16 @@ static void *handle_connection(void *arg)
     while ((n = recv(fd, buf, DRAIN_BUF_SIZE, 0)) > 0)
         ; /* drain — this is the bandwidth sink */
 
+#ifdef _WIN32
+    if (n < 0 && WSAGetLastError() == WSAETIMEDOUT)
+#else
     if (n < 0 && errno == EAGAIN)
+#endif
         log_info("SERVER", "client %s: max-duration reached, closing", addr_str);
 
     free(buf);
     log_info("SERVER", "client %s disconnected", addr_str);
-    close(fd);
+    sock_close(fd);
     return NULL;
 }
 
@@ -123,7 +139,7 @@ int run_server(int port, int max_duration)
 
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
         log_error("SERVER", "setsockopt SO_REUSEADDR: %s", strerror(errno));
-        close(server_fd);
+        sock_close(server_fd);
         return -1;
     }
 
@@ -134,13 +150,13 @@ int run_server(int port, int max_duration)
 
     if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         log_error("SERVER", "bind: %s", strerror(errno));
-        close(server_fd);
+        sock_close(server_fd);
         return -1;
     }
 
     if (listen(server_fd, SOMAXCONN) < 0) {
         log_error("SERVER", "listen: %s", strerror(errno));
-        close(server_fd);
+        sock_close(server_fd);
         return -1;
     }
 
@@ -150,7 +166,11 @@ int run_server(int port, int max_duration)
     else
         log_info("SERVER", "listening on port %d", port);
 
+    /* SIGPIPE does not exist on Windows; on POSIX ignore it so that
+     * writing to a disconnected socket returns EPIPE instead of dying. */
+#ifndef _WIN32
     signal(SIGPIPE, SIG_IGN);
+#endif
 
     while (1) {
         struct sockaddr_in peer;
@@ -164,7 +184,7 @@ int run_server(int port, int max_duration)
 
         struct conn_arg *ctx = malloc(sizeof(*ctx));
         if (!ctx) {
-            close(client_fd);
+            sock_close(client_fd);
             continue;
         }
         ctx->fd           = client_fd;
@@ -175,12 +195,12 @@ int run_server(int port, int max_duration)
         if (pthread_create(&tid, NULL, handle_connection, ctx) != 0) {
             log_error("SERVER", "pthread_create: %s", strerror(errno));
             free(ctx);
-            close(client_fd);
+            sock_close(client_fd);
             continue;
         }
         pthread_detach(tid);
     }
 
-    close(server_fd);
+    sock_close(server_fd);
     return 0;
 }

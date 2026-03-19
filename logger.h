@@ -30,7 +30,10 @@ void logger_close(void);
  *           Use the convenience macros below instead of calling directly.
  */
 void log_msg(log_level_t level, const char *module, const char *fmt, ...)
-    __attribute__((format(printf, 3, 4)));
+#ifdef __GNUC__
+    __attribute__((format(printf, 3, 4)))
+#endif
+    ;
 
 #define log_error(mod, ...) log_msg(LOG_LEVEL_ERROR, (mod), __VA_ARGS__)
 #define log_info(mod, ...)  log_msg(LOG_LEVEL_INFO,  (mod), __VA_ARGS__)
