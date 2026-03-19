@@ -137,7 +137,7 @@ int run_server(int port, int max_duration)
         return -1;
     }
 
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt)) < 0) {
         log_error("SERVER", "setsockopt SO_REUSEADDR: %s", strerror(errno));
         sock_close(server_fd);
         return -1;
