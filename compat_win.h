@@ -60,7 +60,8 @@ static inline void usleep_compat(unsigned long us)
     if (ms == 0 && us > 0) ms = 1;   /* always sleep at least 1 ms */
     Sleep(ms);
 }
-#define usleep(us)  usleep_compat(us)
+#define usleep(us)      usleep_compat(us)
+#define sleep(seconds)  Sleep((DWORD)(seconds) * 1000u)
 
 /* ------------------------------------------------------------------ */
 /* Socket close                                                         */
