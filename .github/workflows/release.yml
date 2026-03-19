@@ -146,6 +146,14 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Fail if release tag already exists
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if git tag --list "${TAG}" | grep -q .; then
+            echo "::error::Tag ${TAG} already exists — bump SPDCHK_VERSION in spdchk.h before releasing."
+            exit 1
+          fi
+
       - name: Download amd64 artifact
         uses: actions/download-artifact@v4
         with:
