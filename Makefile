@@ -4,10 +4,11 @@ CFLAGS = -Wall -Wextra -std=c11 -O2
 # --------------------------------------------------------------------
 # Platform detection — the Windows build uses separate source files for
 # the modules that rely on OS-specific APIs (SDD §6):
-#   icmp_win.c     replaces icmp.c     (Winsock2 raw sockets)
+#   icmp_win.c     replaces icmp.c     (iphlpapi IcmpSendEcho, no raw socket)
 #   logger_win.c   replaces logger.c   (file-based log, no syslog)
 #   terminal_win.c new file            (SetConsoleMode / TIOCGWINSZ)
-#   win_main.c     replaces main.c     (WSAStartup + privilege check)
+#   win_main.c     replaces main.c     (WSAStartup, no elevation required)
+#   spdchk.rc      Windows resource    (version info + application manifest)
 # --------------------------------------------------------------------
 
 # Sources shared by all platforms
@@ -18,11 +19,13 @@ ifeq ($(OS),Windows_NT)
     LDFLAGS  = -lm -Wl,-Bstatic -lpthread -Wl,-Bdynamic -lws2_32 -liphlpapi
     TARGET   = spdchk.exe
     SRCS     = $(BASE_SRCS) icmp_win.c logger_win.c terminal_win.c win_main.c
+    WIN_RES  = spdchk_res.o
 else
     CFLAGS  += -D_DEFAULT_SOURCE
     LDFLAGS  = -lm -lpthread
     TARGET   = spdchk
     SRCS     = $(BASE_SRCS) icmp.c logger.c main.c
+    WIN_RES  =
 endif
 
 OBJS = $(SRCS:.c=.o)
@@ -31,14 +34,17 @@ OBJS = $(SRCS:.c=.o)
 
 all: $(TARGET)
 
-$(TARGET): $(OBJS)
+$(TARGET): $(OBJS) $(WIN_RES)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+spdchk_res.o: spdchk.rc spdchk.manifest
+	windres spdchk.rc -o spdchk_res.o
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(OBJS) $(TARGET) spdchk spdchk.exe tests/*_t.o spdchk_test
+	rm -f $(OBJS) $(WIN_RES) $(TARGET) spdchk spdchk.exe tests/*_t.o spdchk_test
 
 # -----------------------------------------------------------------------
 # Unit tests (Linux only — requires fmemopen / POSIX sockets / syslog)

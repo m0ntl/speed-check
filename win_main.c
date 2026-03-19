@@ -1,17 +1,19 @@
 /*
- * win_main.c — Windows entry point for spdchk (SDD §2, §5).
+ * win_main.c — Windows entry point for spdchk.
  *
- * Responsibilities (SDD §5 execution flow):
+ * Responsibilities:
  *   1. Initialize Winsock 2.2 via WSAStartup() before any socket call.
- *   2. Warn if the process is not running as Administrator (raw ICMP
- *      sockets require elevation; without it icmp_win.c returns -2).
- *   3. Enable ANSI/VT console output so the existing escape codes render.
- *   4. Parse the same CLI flags as main.c: -v / --log-level N.
- *   5. Invoke the shared interactive_main() entry point.
- *   6. Call WSACleanup() before exit.
+ *   2. Enable ANSI/VT console output so the existing escape codes render.
+ *   3. Parse the same CLI flags as main.c: -v / --log-level N.
+ *   4. Invoke the shared interactive_main() entry point.
+ *   5. Call WSACleanup() before exit.
  *
  * This file replaces main.c in the Windows build (see the Windows branch
  * of the Makefile).  All TUI and test logic remains in the shared files.
+ *
+ * Note: No Administrator privilege is required.  ICMP uses IcmpSendEcho
+ * (iphlpapi) rather than raw sockets, so the binary runs as a standard
+ * user for all functionality.
  */
 
 #include <stdio.h>
@@ -31,35 +33,6 @@
 #include "terminal_win.h"
 
 /* ------------------------------------------------------------------ */
-/* Administrator privilege check                                        */
-/* ------------------------------------------------------------------ */
-
-/*
- * is_elevated — return 1 when the current process token carries the
- * elevated Administrator SID (UAC-raised or full-admin session).
- *
- * Uses TOKEN_ELEVATION / TokenElevation rather than IsUserAnAdmin()
- * (shell32) so no extra DLL is required at start-up.
- */
-static int is_elevated(void)
-{
-    BOOL   elevated = FALSE;
-    HANDLE tok      = NULL;
-
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok))
-        return 0;
-
-    TOKEN_ELEVATION elev;
-    DWORD           len = 0;
-    if (GetTokenInformation(tok, TokenElevation,
-                             &elev, sizeof(elev), &len))
-        elevated = elev.TokenIsElevated;
-
-    CloseHandle(tok);
-    return elevated ? 1 : 0;
-}
-
-/* ------------------------------------------------------------------ */
 /* Entry point                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -71,14 +44,6 @@ int main(int argc, char *argv[])
     if (rc != 0) {
         fprintf(stderr, "spdchk: WSAStartup failed (error %d)\n", rc);
         return EXIT_FAILURE;
-    }
-
-    /* ---- Step 1: Administrator privilege warning ---- */
-    if (!is_elevated()) {
-        fprintf(stderr,
-                "spdchk: WARNING — not running as Administrator.\n"
-                "  ICMP raw sockets require elevation; reachability\n"
-                "  tests will report \"Insufficient privileges\".\n\n");
     }
 
     /* ---- Step 2: UTF-8 output + enable ANSI/VT console ---- */

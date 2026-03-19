@@ -15,10 +15,12 @@ struct icmp_stats {
  *
  * Returns  0 if at least one reply was received.
  * Returns -1 if all pings failed or on a non-permission socket error.
- * Returns -2 if the raw socket could not be created due to insufficient
- *            privileges (EACCES / EPERM); run with sudo or set CAP_NET_RAW.
+ * Returns -2 if insufficient privileges prevented the ICMP operation
+ *            (Linux: EACCES/EPERM on SOCK_RAW; Windows: not applicable
+ *            — IcmpSendEcho does not require elevation).
  *
- * Requires CAP_NET_RAW / root privileges (SOCK_RAW).
+ * On Linux requires CAP_NET_RAW or root for SOCK_RAW.
+ * On Windows uses IcmpSendEcho (iphlpapi) — no elevation required.
  */
 int icmp_ping(const char *target_ip, int count, struct icmp_stats *stats);
 

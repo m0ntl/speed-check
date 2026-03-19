@@ -1,0 +1,47 @@
+/*
+ * spdchk.rc — Windows resource script.
+ *
+ * Compiled with windres and linked into spdchk.exe to embed:
+ *   1. A VERSIONINFO block with human-readable file metadata.
+ *   2. The application manifest (RT_MANIFEST, ID 1) that declares the
+ *      binary as a trusted, unprivileged application and advertises
+ *      Windows version compatibility.
+ *
+ * Update FILEVERSION / PRODUCTVERSION and the string values whenever
+ * SPDCHK_VERSION in spdchk.h is bumped.
+ */
+
+#include <winver.h>
+
+/* ---- Application manifest (ID 1 = main executable) ---- */
+1 RT_MANIFEST "spdchk.manifest"
+
+/* ---- Version information ---- */
+VS_VERSION_INFO VERSIONINFO
+  FILEVERSION     0,12,0,0
+  PRODUCTVERSION  0,12,0,0
+  FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+  FILEFLAGS       0
+  FILEOS          VOS_NT_WINDOWS32
+  FILETYPE        VFT_APP
+  FILESUBTYPE     VFT_UNKNOWN
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904b0"   /* English (US), Unicode */
+    BEGIN
+      VALUE "CompanyName",      "spdchk contributors"
+      VALUE "FileDescription",  "spdchk \x2014 Network Diagnostic Utility"
+      VALUE "FileVersion",      "0.12.0.0"
+      VALUE "InternalName",     "spdchk"
+      VALUE "LegalCopyright",   "Open source. See LICENSE."
+      VALUE "OriginalFilename", "spdchk.exe"
+      VALUE "ProductName",      "spdchk"
+      VALUE "ProductVersion",   "0.12.0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0409, 1200   /* English (US), Unicode */
+  END
+END
