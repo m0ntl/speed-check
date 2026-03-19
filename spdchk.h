@@ -18,7 +18,7 @@
  * The CI/CD pipeline reads this value to name every release automatically.
  * Bump it here before merging the commit that should carry the new version.
  */
-#define SPDCHK_VERSION "0.9.0"
+#define SPDCHK_VERSION "0.9.1"
 
 #define DEFAULT_PORT       2200
 #define DEFAULT_COUNT      4    /* ICMP pings per test (spec §3.2)       */
