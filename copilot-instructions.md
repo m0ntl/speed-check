@@ -9,7 +9,7 @@
 
 The binary is a single interactive TUI application. All parameters (mode, target IP, port, streams, etc.) are configured inside the TUI. The only CLI flags accepted at launch are `-v` / `--log-level` for log verbosity. On Linux the binary requires `CAP_NET_RAW` (or `sudo`) for the raw ICMP socket; on Windows no elevated privileges are needed (ICMP uses the `IcmpSendEcho` API).
 
-Current version: **0.12.0** (defined in `spdchk.h`).
+Current version: **0.12.1** (defined in `spdchk.h`).
 
 ### CLI Flags
 
