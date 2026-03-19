@@ -9,7 +9,7 @@
 
 The binary is a single interactive TUI application. All parameters (mode, target IP, port, streams, etc.) are configured inside the TUI. The only CLI flags accepted at launch are `-v` / `--log-level` for log verbosity. The binary requires `CAP_NET_RAW` (or `sudo`) for the raw ICMP socket.
 
-Current version: **0.10.3** (defined in `spdchk.h`).
+Current version: **0.11.4** (defined in `spdchk.h`).
 
 ### CLI Flags
 
@@ -136,6 +136,7 @@ Always bump the version as the **last commit** in a feature branch before pushin
 ### 6. Finish by Pushing — Do Not Build
 
 - Do **not** run `make`, `gcc`, or any build/compile command.
+- Make sure you increase the version number in `spdchk.h` and in the `description` field of `copilot-instructions.md`.
 - After all commits are ready, finish the session by running:
   ```
   git push
