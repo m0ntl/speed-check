@@ -528,6 +528,26 @@ int run_client_ex(const struct client_args *args, struct run_client_result *resu
 
     FILE *out = stdout;
     if (args->output_path) {
+        /* Reject paths containing ".." components to prevent directory
+         * traversal writes, which are especially dangerous when this
+         * process runs with elevated privileges (e.g. sudo for ICMP). */
+        const char *op = args->output_path;
+        int has_traversal = (strncmp(op, "..", 2) == 0 &&
+                             (op[2] == '\0' || op[2] == '/' || op[2] == '\\'));
+        if (!has_traversal) {
+            for (const char *p = op; *p && !has_traversal; p++) {
+                if ((*p == '/' || *p == '\\') &&
+                        p[1] == '.' && p[2] == '.' &&
+                        (p[3] == '\0' || p[3] == '/' || p[3] == '\\'))
+                    has_traversal = 1;
+            }
+        }
+        if (has_traversal) {
+            log_error("CLIENT",
+                      "output path '%s' contains '..' — directory traversal"
+                      " is not permitted", args->output_path);
+            return -1;
+        }
         out = fopen(args->output_path, "w");
         if (!out) {
             log_error("CLIENT", "cannot open output file '%s': %s",

@@ -21,6 +21,13 @@
 
 #define DRAIN_BUF_SIZE (64 * 1024)
 
+/* Maximum number of simultaneous client threads.  Connections beyond this
+ * limit are refused immediately to prevent resource exhaustion (DoS). */
+#define MAX_CONCURRENT_CONNECTIONS 256
+
+static pthread_mutex_t g_conn_mtx   = PTHREAD_MUTEX_INITIALIZER;
+static int             g_conn_count = 0;
+
 struct conn_arg {
     int                fd;
     struct sockaddr_in peer;
@@ -94,7 +101,8 @@ static void *handle_connection(void *arg)
             char resp[64];
             int  rlen = snprintf(resp, sizeof(resp),
                                  "ERR VERSION_MISMATCH %s\n", SPDCHK_VERSION);
-            send(fd, resp, (size_t)rlen, MSG_NOSIGNAL);
+            if (rlen > 0 && rlen < (int)sizeof(resp))
+                send(fd, resp, (size_t)rlen, MSG_NOSIGNAL);
             log_info("SERVER", "rejected %s: version mismatch (client=%s server=%s)",
                      addr_str, ver_buf, SPDCHK_VERSION);
         }
@@ -122,6 +130,10 @@ static void *handle_connection(void *arg)
     free(buf);
     log_info("SERVER", "client %s disconnected", addr_str);
     sock_close(fd);
+
+    pthread_mutex_lock(&g_conn_mtx);
+    g_conn_count--;
+    pthread_mutex_unlock(&g_conn_mtx);
     return NULL;
 }
 
@@ -182,8 +194,24 @@ int run_server(int port, int max_duration)
             continue;
         }
 
+        /* Enforce connection limit before allocating resources. */
+        pthread_mutex_lock(&g_conn_mtx);
+        if (g_conn_count >= MAX_CONCURRENT_CONNECTIONS) {
+            pthread_mutex_unlock(&g_conn_mtx);
+            log_info("SERVER",
+                     "connection limit (%d) reached — dropping new client",
+                     MAX_CONCURRENT_CONNECTIONS);
+            sock_close(client_fd);
+            continue;
+        }
+        g_conn_count++;
+        pthread_mutex_unlock(&g_conn_mtx);
+
         struct conn_arg *ctx = malloc(sizeof(*ctx));
         if (!ctx) {
+            pthread_mutex_lock(&g_conn_mtx);
+            g_conn_count--;
+            pthread_mutex_unlock(&g_conn_mtx);
             sock_close(client_fd);
             continue;
         }
@@ -195,6 +223,9 @@ int run_server(int port, int max_duration)
         if (pthread_create(&tid, NULL, handle_connection, ctx) != 0) {
             log_error("SERVER", "pthread_create: %s", strerror(errno));
             free(ctx);
+            pthread_mutex_lock(&g_conn_mtx);
+            g_conn_count--;
+            pthread_mutex_unlock(&g_conn_mtx);
             sock_close(client_fd);
             continue;
         }

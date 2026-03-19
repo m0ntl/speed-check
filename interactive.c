@@ -277,11 +277,11 @@ static void read_str_field(const char *label, char *buf, size_t len)
 
     char line[256];
     if (fgets(line, (int)sizeof(line), stdin)) {
-        /* Strip trailing newline */
+        /* Strip trailing newline and carriage return (handles CRLF on
+         * Windows so neither \r nor \n leaks into paths or addresses). */
         size_t l = strlen(line);
-        if (l > 0 && line[l - 1] == '\n') {
-            line[--l] = '\0';
-        }
+        if (l > 0 && line[l - 1] == '\n') line[--l] = '\0';
+        if (l > 0 && line[l - 1] == '\r') line[--l] = '\0';
         snprintf(buf, len, "%s", line);
     }
 
