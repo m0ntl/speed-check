@@ -125,6 +125,39 @@ static void sig_cleanup(int signo)
     _exit(1);
 }
 
+/*
+ * win_is_firewall_active — return 1 when Windows Firewall is enabled in
+ * at least one active network profile (Domain, Standard/Private, Public).
+ *
+ * Reads the EnableFirewall DWORD from each profile's registry key.  No
+ * COM initialisation or external process is required.
+ */
+static int win_is_firewall_active(void)
+{
+    static const char *profiles[] = {
+        "SYSTEM\\CurrentControlSet\\Services\\SharedAccess"
+        "\\Parameters\\FirewallPolicy\\DomainProfile",
+        "SYSTEM\\CurrentControlSet\\Services\\SharedAccess"
+        "\\Parameters\\FirewallPolicy\\StandardProfile",
+        "SYSTEM\\CurrentControlSet\\Services\\SharedAccess"
+        "\\Parameters\\FirewallPolicy\\PublicProfile",
+        NULL
+    };
+    for (int i = 0; profiles[i]; i++) {
+        HKEY  hkey;
+        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, profiles[i], 0,
+                          KEY_READ, &hkey) != ERROR_SUCCESS)
+            continue;
+        DWORD val = 0, sz = sizeof(val);
+        LONG  rc = RegQueryValueExA(hkey, "EnableFirewall", NULL, NULL,
+                                    (LPBYTE)&val, &sz);
+        RegCloseKey(hkey);
+        if (rc == ERROR_SUCCESS && val != 0)
+            return 1;
+    }
+    return 0;
+}
+
 #else /* POSIX ---------------------------------------------------- */
 
 static struct termios orig_termios;
@@ -951,6 +984,20 @@ int interactive_main(void)
         if (ctx.state == STATE_RUNNING_SERVER) {
             restore_terminal_mode();
             render_running_server(ctx.port, ctx.max_dur);
+#ifdef _WIN32
+            if (win_is_firewall_active()) {
+                printf("  " A_YELLOW "WARNING: Windows Firewall is active.\n" A_RESET);
+                printf("  Inbound TCP on port " A_BOLD "%d" A_RESET
+                       " may be blocked if no allow rule exists.\n", ctx.port);
+                printf("  To add a rule (run as Administrator):\n");
+                printf("    netsh advfirewall firewall add rule "
+                       "name=\"spdchk\" "
+                       "protocol=TCP dir=in action=allow "
+                       "localport=%d\n", ctx.port);
+                printf(THIN_LINE);
+                fflush(stdout);
+            }
+#endif
             run_server(ctx.port, ctx.max_dur);
             setup_terminal_raw_mode();
             ctx.state = STATE_MAIN_MENU;
