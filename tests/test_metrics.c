@@ -292,6 +292,25 @@ static void test_reliability_unstable(void)
     ASSERT_CONTAINS(capture_bandwidth(&bw), "Unstable");
 }
 
+/* DSS probe-stream inflation: bytes_sent counts only optimal_n streams but
+ * the server accumulates all streams, so raw ratio can exceed 100.  The
+ * client clamps reliability_score to 100.0 before populating the struct.
+ * Verify that a clamped value of 100.0 renders as "Optimal", not ">100". */
+static void test_reliability_dss_clamped(void)
+{
+    struct bandwidth_result bw = {
+        .throughput_gbps   = 1.0,
+        .duration_sec      = 10,
+        .parallel_streams  = 4,
+        .optimal_streams   = 5,
+        .reliability_score = 100.0,  /* clamped from e.g. 108.5 */
+        .is_verified       = 1,
+    };
+    const char *out = capture_bandwidth(&bw);
+    ASSERT_CONTAINS(out, "Optimal");
+    ASSERT_NOT_CONTAINS(out, "108");
+}
+
 /* JSON verified fields appear only when is_verified = 1 */
 static void test_json_verified_fields(void)
 {
@@ -333,5 +352,6 @@ void run_metrics_tests(void)
     run_test("reliability_stable",            test_reliability_stable);
     run_test("reliability_degraded",          test_reliability_degraded);
     run_test("reliability_unstable",          test_reliability_unstable);
+    run_test("reliability_dss_clamped",       test_reliability_dss_clamped);
     run_test("json_verified_fields",          test_json_verified_fields);
 }

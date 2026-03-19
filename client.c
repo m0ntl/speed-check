@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <math.h>
 #include <pthread.h>
 #include <time.h>
 
@@ -600,8 +601,11 @@ int run_client_ex(const struct client_args *args, struct run_client_result *resu
                                                         &is_verified);
         bw.bytes_received    = bytes_received;
         bw.is_verified       = is_verified;
+        /* Cap at 100.0: in DSS mode the server accumulates bytes from ALL
+         * streams (including probe streams), but bytes_sent counts only the
+         * optimal_n streams, so the raw ratio can exceed 1.0.             */
         bw.reliability_score = (bw.bytes_sent > 0)
-                             ? ((double)bytes_received / (double)bw.bytes_sent) * 100.0
+                             ? fmin(((double)bytes_received / (double)bw.bytes_sent) * 100.0, 100.0)
                              : 100.0;
         bw.throughput_gbps   = (bw.duration_sec > 0)
                              ? ((double)bytes_received * 8.0)
