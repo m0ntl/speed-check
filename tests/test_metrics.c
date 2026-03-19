@@ -292,10 +292,9 @@ static void test_reliability_unstable(void)
     ASSERT_CONTAINS(capture_bandwidth(&bw), "Unstable");
 }
 
-/* DSS probe-stream inflation: bytes_sent counts only optimal_n streams but
- * the server accumulates all streams, so raw ratio can exceed 100.  The
- * client clamps reliability_score to 100.0 before populating the struct.
- * Verify that a clamped value of 100.0 renders as "Optimal", not ">100". */
+/* DSS probe-stream accounting: bytes_sent includes all streams (probe
+ * streams included) so it matches the server's tally. Verify that a
+ * score of 100.0 (optimal DSS run) renders as "Optimal". */
 static void test_reliability_dss_clamped(void)
 {
     struct bandwidth_result bw = {
@@ -303,7 +302,7 @@ static void test_reliability_dss_clamped(void)
         .duration_sec      = 10,
         .parallel_streams  = 4,
         .optimal_streams   = 5,
-        .reliability_score = 100.0,  /* clamped from e.g. 108.5 */
+        .reliability_score = 100.0,
         .is_verified       = 1,
     };
     const char *out = capture_bandwidth(&bw);

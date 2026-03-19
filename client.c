@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <math.h>
 #include <pthread.h>
 #include <time.h>
 
@@ -442,19 +441,24 @@ static int run_bandwidth_dss(const struct client_args *args,
     g_stop = 1;
 
     /*
-     * Throughput is computed from the first `optimal_n` streams only.
-     * Any extra probe stream(s) that caused plateau detection kept running
-     * until now but must not inflate the reported result — the summary
-     * must be consistent with the advertised optimal stream count.
+     * Throughput is computed from the first `optimal_n` streams only so the
+     * reported Gbps is consistent with the displayed stream count.  However
+     * bytes_sent must include ALL streams (probe streams included) because
+     * the server accumulates every stream from this IP — using a smaller
+     * denominator would produce reliability scores above 100%.
      */
-    long long total_bytes = 0;
-    int       ok          = 0;
+    long long total_bytes     = 0; /* optimal_n streams — throughput basis   */
+    long long total_bytes_all = 0; /* all n streams   — reliability basis    */
+    int       ok              = 0;
     for (int i = 0; i < n; i++) {
         pthread_join(tids[i], NULL);
         long long bs = __atomic_load_n(&ctxs[i].bytes_sent, __ATOMIC_RELAXED);
-        if (i < optimal_n && bs >= 0) {
-            total_bytes += bs;
-            ok++;
+        if (bs >= 0) {
+            total_bytes_all += bs;
+            if (i < optimal_n) {
+                total_bytes += bs;
+                ok++;
+            }
         }
     }
 
@@ -467,9 +471,9 @@ static int run_bandwidth_dss(const struct client_args *args,
              optimal_n, n);
 
     out->duration_sec     = args->duration;
-    out->parallel_streams = optimal_n;          /* effective count (throughput basis) */
+    out->parallel_streams = optimal_n;              /* effective count (throughput basis) */
     out->optimal_streams  = (n > optimal_n) ? n : 0; /* probed count; 0 = no extra probe */
-    out->bytes_sent       = (uint64_t)total_bytes;   /* raw count; throughput computed after Phase 3 */
+    out->bytes_sent       = (uint64_t)total_bytes_all; /* all streams; matches server tally */
     return 0;
 }
 
@@ -601,11 +605,8 @@ int run_client_ex(const struct client_args *args, struct run_client_result *resu
                                                         &is_verified);
         bw.bytes_received    = bytes_received;
         bw.is_verified       = is_verified;
-        /* Cap at 100.0: in DSS mode the server accumulates bytes from ALL
-         * streams (including probe streams), but bytes_sent counts only the
-         * optimal_n streams, so the raw ratio can exceed 1.0.             */
         bw.reliability_score = (bw.bytes_sent > 0)
-                             ? fmin(((double)bytes_received / (double)bw.bytes_sent) * 100.0, 100.0)
+                             ? ((double)bytes_received / (double)bw.bytes_sent) * 100.0
                              : 100.0;
         bw.throughput_gbps   = (bw.duration_sec > 0)
                              ? ((double)bytes_received * 8.0)
