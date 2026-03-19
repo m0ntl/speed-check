@@ -527,8 +527,6 @@ static void render_bw_results(const struct run_client_result *r,
         const char *tput_tag   = r->is_verified ? "(Verified)" : "(Estimated)";
         printf("  Throughput:  %s" A_BOLD "%.3f Gbps" A_RESET " %s\n",
                tput_color, r->throughput_gbps, tput_tag);
-        printf("  Avg RTT:     " A_BOLD "%.2f ms\n"   A_RESET, r->avg_latency_ms);
-        printf("  Packet loss: " A_BOLD "%.1f%%\n"    A_RESET, r->packet_loss_pct);
         printf("  Streams:     " A_BOLD "%d\n"        A_RESET, streams);
         printf("  Duration:    " A_BOLD "%d s\n"      A_RESET, duration);
         if (r->is_verified) {
@@ -630,9 +628,9 @@ static void render_history(void)
             if (strcmp(c->test_type, "TCP") != 0)
                 continue;
             if (tcp_printed == 0) {
-                printf(A_BOLD "  %-3s  %-19s  %-7s  %-4s  %-11s  %s\n" A_RESET,
+                printf(A_BOLD "  %-3s  %-19s  %-7s  %-4s  %s\n" A_RESET,
                        "#", "Timestamp", "Streams", "Dur",
-                       "Throughput", "Latency");
+                       "Throughput");
                 printf(THIN_LINE);
             }
             tcp_printed++;
@@ -650,12 +648,7 @@ static void render_history(void)
             hist_dbl(c->throughput,
                      prev_tcp ? prev_tcp->throughput : 0.0,
                      prev_tcp != NULL,
-                     "%-8.3f Gbps");
-            printf("  ");
-            hist_dbl(c->latency,
-                     prev_tcp ? prev_tcp->latency : 0.0,
-                     prev_tcp != NULL,
-                     "%.2f ms");
+                     "%.3f Gbps");
             printf("\n");
             prev_tcp = c;
         }
@@ -723,7 +716,7 @@ static void execute_test(AppCtx *ctx)
         r.streams    = ctx->streams;
         r.duration   = ctx->duration;
         r.throughput = (rc == 0) ? bw.throughput_gbps : -1.0;
-        r.latency    = (rc == 0) ? bw.avg_latency_ms  : -1.0;
+        r.latency    = -1.0;
         get_timestamp(r.timestamp, sizeof(r.timestamp));
         history_append(&r);
     }

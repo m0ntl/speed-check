@@ -621,8 +621,6 @@ int run_client_ex(const struct client_args *args, struct run_client_result *resu
 
     if (result) {
         result->throughput_gbps   = bw.throughput_gbps;
-        result->avg_latency_ms    = 0.0;
-        result->packet_loss_pct   = 0.0;
         result->reliability_score = bw.reliability_score;
         result->is_verified       = bw.is_verified;
     }
