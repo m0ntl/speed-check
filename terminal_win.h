@@ -13,10 +13,24 @@
 #define TERMINAL_WIN_H
 
 /*
+ * Key codes returned by win_read_key() — identical values to the KEY_*
+ * defines in interactive.c so capture_input() can forward them directly.
+ */
+#define KEY_UP    1000
+#define KEY_DOWN  1001
+#define KEY_ENTER 1002
+#define KEY_ESC   1003
+#define KEY_QUIT  1004
+
+/*
  * win_init_console — enable ANSI/Virtual Terminal Processing on the
- * output console handle and ENABLE_VIRTUAL_TERMINAL_INPUT on the input
- * handle so that the existing ANSI escape codes produced by interactive.c
- * and telemetry.c render correctly on Windows 10+ consoles (SDD §2.2).
+ * output console handle so that the existing ANSI escape codes produced
+ * by interactive.c and telemetry.c render correctly on Windows 10+
+ * consoles (SDD §2.2).
+ *
+ * ENABLE_VIRTUAL_TERMINAL_INPUT is intentionally NOT set; key input is
+ * handled via ReadConsoleInput() with virtual key codes in win_read_key()
+ * which does not need VT sequence synthesis.
  *
  * On pre-Windows-10 hosts the SetConsoleMode flags may be rejected; the
  * function silently continues — text will contain raw escape sequences
@@ -25,6 +39,21 @@
  * Call once from win_main.c before interactive_main().
  */
 void win_init_console(void);
+
+/*
+ * win_read_key — blocking read of one logical keypress using the Win32
+ * ReadConsoleInput() API.  All non key-down INPUT_RECORD types (mouse
+ * moves, resize, focus, key-up) are discarded so the caller receives
+ * exactly one action per physical key press.
+ *
+ * Returns one of the KEY_* constants above, or the raw character code
+ * for printable keys.  Returns -1 on I/O error.
+ *
+ * This replaces the _read() / WaitForSingleObject approach in
+ * capture_input() which could return WAIT_OBJECT_0 for non-character
+ * events, causing key presses to require two presses to register.
+ */
+int win_read_key(void);
 
 /*
  * win_set_raw_mode — disable line-buffering (ENABLE_LINE_INPUT) and

@@ -43,15 +43,59 @@ void win_init_console(void)
         }
     }
 
-    /* --- Input handle: enable VT input + extended key events ------- */
+    /*
+     * Input handle: enable extended key events but do NOT enable
+     * ENABLE_VIRTUAL_TERMINAL_INPUT — win_read_key() uses ReadConsoleInput()
+     * with virtual key codes directly and does not need VT sequence synthesis.
+     */
     HANDLE hin = GetStdHandle(STD_INPUT_HANDLE);
     if (hin != INVALID_HANDLE_VALUE) {
         DWORD mode = 0;
         if (GetConsoleMode(hin, &mode)) {
             SetConsoleMode(hin,
-                mode | ENABLE_VIRTUAL_TERMINAL_INPUT
-                     | ENABLE_EXTENDED_FLAGS);
+                (mode & ~(DWORD)ENABLE_VIRTUAL_TERMINAL_INPUT)
+                | ENABLE_EXTENDED_FLAGS);
         }
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* win_read_key                                                         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * win_read_key — blocking read via ReadConsoleInput.
+ *
+ * Filters out every INPUT_RECORD that is not a key-down event (mouse
+ * moves, resize, focus events, key-up events) so the caller sees exactly
+ * one response per physical key press.  Virtual key codes are mapped to
+ * KEY_* constants; printable characters are returned as-is.
+ */
+int win_read_key(void)
+{
+    HANDLE      hin = GetStdHandle(STD_INPUT_HANDLE);
+    INPUT_RECORD rec;
+    DWORD        n;
+
+    for (;;) {
+        if (!ReadConsoleInputA(hin, &rec, 1, &n) || n == 0)
+            return -1;
+
+        /* Discard everything except key-down events. */
+        if (rec.EventType != KEY_EVENT || !rec.Event.KeyEvent.bKeyDown)
+            continue;
+
+        WORD vk = rec.Event.KeyEvent.wVirtualKeyCode;
+        if (vk == VK_UP)     return KEY_UP;
+        if (vk == VK_DOWN)   return KEY_DOWN;
+        if (vk == VK_RETURN) return KEY_ENTER;
+        if (vk == VK_ESCAPE) return KEY_ESC;
+
+        /* Printable / control character. */
+        char ch = rec.Event.KeyEvent.uChar.AsciiChar;
+        if (ch == 'q' || ch == 'Q') return KEY_QUIT;
+        if (ch != 0) return (int)(unsigned char)ch;
+        /* Any other non-printing virtual key — loop and ignore. */
     }
 }
 

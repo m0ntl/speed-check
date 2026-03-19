@@ -81,7 +81,8 @@ int main(int argc, char *argv[])
                 "  tests will report \"Insufficient privileges\".\n\n");
     }
 
-    /* ---- Step 2: Enable ANSI/VT console output ---- */
+    /* ---- Step 2: UTF-8 output + enable ANSI/VT console ---- */
+    SetConsoleOutputCP(CP_UTF8);
     win_init_console();
 
     /* ---- CLI flag parsing (mirrors main.c exactly) ---- */

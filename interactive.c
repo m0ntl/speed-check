@@ -24,6 +24,16 @@
 #define A_BOLD    "\033[1m"
 #define A_DIM     "\033[2m"
 #define A_INVERT  "\033[7m"
+
+#ifdef _WIN32
+/*
+ * \033[2m (dim) renders as near-invisible text on dark Windows console
+ * themes.  Dark-gray (\033[90m) achieves the same visual weight and is
+ * reliable across conhost, Windows Terminal, and VS Code terminal.
+ */
+#  undef  A_DIM
+#  define A_DIM "\033[90m"
+#endif
 #define A_YELLOW  "\033[33m"
 #define A_CYAN    "\033[36m"
 #define A_RESET   "\033[0m"
@@ -158,41 +168,43 @@ static void sig_cleanup(int signo)
 /* ================================================================== */
 /* Input capture                                                       */
 /* ================================================================== */
+/* On Windows, KEY_* are defined in terminal_win.h (included above). */
+#ifndef KEY_UP
 #define KEY_UP    1000
 #define KEY_DOWN  1001
 #define KEY_ENTER 1002
 #define KEY_ESC   1003
 #define KEY_QUIT  1004
+#endif
 
 /*
  * capture_input — read one logical keypress.
- * Arrow keys are transmitted as a 3-byte ESC sequence; we peek for the
- * remaining two bytes with a 100 ms timeout so a bare ESC still works.
  *
+ * On Windows: delegates to win_read_key() which uses ReadConsoleInput()
+ * with virtual key codes \u2014 no VT sequence parsing required.
+ *
+ * On Linux: arrow keys are transmitted as 3-byte ESC sequences and
+ * detected via a 100 ms termios timeout peek:
  *   Up Arrow:   0x1B  0x5B  0x41
  *   Down Arrow: 0x1B  0x5B  0x42
  */
 static int capture_input(void)
 {
+#ifdef _WIN32
+    /*
+     * Delegate entirely to win_read_key() which uses ReadConsoleInput()
+     * with virtual key code mapping.  This avoids the WaitForSingleObject
+     * race where mouse/resize/focus INPUT_RECORDs triggered WAIT_OBJECT_0
+     * but produced no _read() bytes, causing every key to require two
+     * presses to register.
+     */
+    return win_read_key();
+#else
     unsigned char c;
     if (read(STDIN_FILENO, &c, 1) != 1)
         return -1;
 
     if (c == 0x1B) {
-#ifdef _WIN32
-        /*
-         * With ENABLE_VIRTUAL_TERMINAL_INPUT active, Windows sends the same
-         * CSI sequences as Linux.  Use WaitForSingleObject to peek for the
-         * remaining two bytes within 100 ms before declaring a bare ESC.
-         */
-        HANDLE hin = GetStdHandle(STD_INPUT_HANDLE);
-        unsigned char seq[2] = {0, 0};
-        if (WaitForSingleObject(hin, 100) == WAIT_OBJECT_0) {
-            if (_read(STDIN_FILENO, &seq[0], 1) == 1
-                    && WaitForSingleObject(hin, 50) == WAIT_OBJECT_0)
-                _read(STDIN_FILENO, &seq[1], 1);
-        }
-#else
         /* Temporarily lower timeout to 100 ms to peek for CSI sequence. */
         struct termios t;
         tcgetattr(STDIN_FILENO, &t);
@@ -207,7 +219,7 @@ static int capture_input(void)
         t.c_cc[VMIN]  = 1;
         t.c_cc[VTIME] = 0;
         tcsetattr(STDIN_FILENO, TCSANOW, &t);
-#endif
+
         if (seq[0] == '[') {
             if (seq[1] == 'A') return KEY_UP;
             if (seq[1] == 'B') return KEY_DOWN;
@@ -218,6 +230,7 @@ static int capture_input(void)
     if (c == '\r' || c == '\n') return KEY_ENTER;
     if (c == 'q'  || c == 'Q') return KEY_QUIT;
     return (int)c;
+#endif
 }
 
 /*
