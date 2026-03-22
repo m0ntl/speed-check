@@ -1170,11 +1170,15 @@ int interactive_main(void)
             render_running_server(ctx.port, ctx.max_dur);
 #ifdef _WIN32
             printf("  " A_YELLOW "NOTE: Windows Firewall may block inbound connections.\n" A_RESET);
-            printf("  If clients cannot reach this server, allow TCP on port "
+            printf("  To allow TCP and UDP on port "
                    A_BOLD "%d" A_RESET " (run as Administrator):\n", ctx.port);
             printf("    netsh advfirewall firewall add rule "
-                   "name=\"spdchk\" "
+                   "name=\"spdchk-tcp\" "
                    "protocol=TCP dir=in action=allow "
+                   "localport=%d\n", ctx.port);
+            printf("    netsh advfirewall firewall add rule "
+                   "name=\"spdchk-udp\" "
+                   "protocol=UDP dir=in action=allow "
                    "localport=%d\n", ctx.port);
             printf(THIN_LINE);
             fflush(stdout);

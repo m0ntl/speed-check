@@ -409,5 +409,13 @@ int run_udp_client(const char *target_ip, int port,
              "result: rx=%u lost=%u ooo=%u jitter=%.3f us peak=%.3f us",
              result->packets_received, result->lost_packets,
              result->out_of_order, result->jitter_us, result->peak_jitter_us);
+
+    if (result->packets_received == 0 && result->packets_sent > 0)
+        log_error("UDP",
+                  "server received 0 of %u packets — "
+                  "check that UDP port %d is not blocked by a firewall "
+                  "on the server side",
+                  result->packets_sent, port);
+
     return 0;
 }
