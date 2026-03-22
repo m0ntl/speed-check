@@ -62,59 +62,9 @@ jobs:
           path: spdchk
           retention-days: 1
 
-  build-windows:
-    runs-on: windows-latest
-    needs: [test]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up MSYS2 (MinGW-w64)
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          update: true
-          install: mingw-w64-x86_64-gcc make
-
-      - name: Build
-        shell: msys2 {0}
-        run: make
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: spdchk-windows-amd64
-          path: spdchk.exe
-          retention-days: 1
-
-  build-windows-arm64:
-    runs-on: windows-11-arm
-    needs: [test]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up MSYS2 (LLVM/Clang ARM64)
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: CLANGARM64
-          update: true
-          install: mingw-w64-clang-aarch64-gcc make
-
-      - name: Build
-        shell: msys2 {0}
-        run: make
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: spdchk-windows-arm64
-          path: spdchk.exe
-          retention-days: 1
-
   release:
     runs-on: ubuntu-latest
-    needs: [test, build-amd64, build-arm64, build-windows, build-windows-arm64]
+    needs: [test, build-amd64, build-arm64]
     permissions:
       contents: write
 
@@ -166,18 +116,6 @@ jobs:
           name: spdchk-linux-arm64
           path: dist/arm64
 
-      - name: Download Windows amd64 artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: spdchk-windows-amd64
-          path: dist/windows-amd64
-
-      - name: Download Windows arm64 artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: spdchk-windows-arm64
-          path: dist/windows-arm64
-
       - name: Download test report
         uses: actions/download-artifact@v4
         with:
@@ -188,8 +126,6 @@ jobs:
         run: |
           mv dist/amd64/spdchk dist/spdchk-linux-amd64
           mv dist/arm64/spdchk dist/spdchk-linux-arm64
-          mv dist/windows-amd64/spdchk.exe dist/spdchk-windows-amd64.exe
-          mv dist/windows-arm64/spdchk.exe dist/spdchk-windows-arm64.exe
           chmod +x dist/spdchk-linux-amd64 dist/spdchk-linux-arm64
 
       - name: Create GitHub Release
@@ -208,12 +144,8 @@ jobs:
             |-------|-------------|
             | `spdchk-linux-amd64` | Linux x86-64 (Intel/AMD) |
             | `spdchk-linux-arm64` | Linux AArch64 (ARM 64-bit) |
-            | `spdchk-windows-amd64.exe` | Windows x86-64 (requires Administrator for ICMP) |
-            | `spdchk-windows-arm64.exe` | Windows AArch64 (requires Administrator for ICMP) |
             | `test-report.txt` | Unit test results for this build |
           files: |
             dist/spdchk-linux-amd64
             dist/spdchk-linux-arm64
-            dist/spdchk-windows-amd64.exe
-            dist/spdchk-windows-arm64.exe
             dist/test-report.txt
