@@ -208,10 +208,12 @@ static void *udp_listener_thread(void *arg)
             int err = WSAGetLastError();
             if (err == WSAETIMEDOUT || err == WSAEINTR)
                 continue;   /* timeout / signal — keep running */
-            /* WSAECONNRESET / WSAENETRESET: Windows delivers a previous
-             * ICMP "port unreachable" reply via recvfrom on unconnected
-             * UDP sockets.  Ignore it so the listener keeps running. */
-            if (err == WSAECONNRESET || err == WSAENETRESET) {
+            /* Windows delivers ICMP error replies as WSA errors on
+             * unconnected UDP sockets.  Treat them all as transient so
+             * the listener keeps running. */
+            if (err == WSAECONNRESET  || err == WSAENETRESET  ||
+                    err == WSAEHOSTUNREACH || err == WSAENETUNREACH ||
+                    err == WSAEHOSTDOWN) {
                 log_debug("SERVER", "UDP listener: ignoring ICMP error %d", err);
                 continue;
             }
@@ -219,7 +221,8 @@ static void *udp_listener_thread(void *arg)
             if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
                 continue;   /* timeout / signal — keep running */
 #endif
-            log_debug("SERVER", "UDP recvfrom: %s", strerror(errno));
+            log_error("SERVER", "UDP recvfrom fatal error: %s — listener exiting",
+                      strerror(errno));
             break;
         }
 
@@ -247,8 +250,11 @@ static void *udp_listener_thread(void *arg)
         }
         if (found < 0) {
             pthread_mutex_unlock(&g_sess_mtx);
-            log_trace("SERVER",
-                      "UDP: dropping packet from unauthorised source");
+            char src_str[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &peer.sin_addr, src_str, sizeof(src_str));
+            log_debug("SERVER",
+                      "UDP: dropping packet from unauthorised source %s:%d",
+                      src_str, ntohs(peer.sin_port));
             continue;
         }
 
@@ -283,7 +289,16 @@ static void *udp_listener_thread(void *arg)
         pthread_mutex_unlock(&g_sess_mtx);
     }
 
-    log_info("SERVER", "UDP listener exiting");
+    /* Reset g_udp_fd before closing so that handle_connection() sees
+     * g_udp_fd < 0 and rejects new UDP_REQ negotiations with a clear
+     * ERR UDP_UNAVAILABLE rather than silently accepting them and
+     * delivering rx=0 because nobody is reading the socket. */
+    int dead_fd = g_udp_fd;
+    g_udp_fd = -1;
+    if (dead_fd >= 0)
+        sock_close(dead_fd);
+
+    log_error("SERVER", "UDP listener has stopped — UDP tests will be refused");
     return NULL;
 }
 
@@ -508,6 +523,12 @@ static void *handle_connection(void *arg)
         log_info("SERVER",
                  "UDP report sent to %s: sent=%u rx=%u ooo=%u jit=%.3f us",
                  addr_str, sent, udp_rx, udp_ooo, jit_us);
+        if (sent > 0 && udp_rx == 0)
+            log_error("SERVER",
+                      "UDP: 0 of %u packets received from %s — "
+                      "check that the UDP port is open in the server firewall "
+                      "and that no NAT/firewall on the path is blocking UDP",
+                      sent, addr_str);
         sock_close(fd);
         pthread_mutex_lock(&g_conn_mtx);
         g_conn_count--;
