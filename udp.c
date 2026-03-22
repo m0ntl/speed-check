@@ -338,8 +338,30 @@ int run_udp_client(const char *target_ip, int port,
         hdr->timestamp_ns = udp_time_ns();
 
         ssize_t n = send(udp_sock, pkt_buf, (size_t)pkt_size, MSG_NOSIGNAL);
-        if (n > 0)
+        if (n > 0) {
             bytes_sent += (uint64_t)n;
+        } else if (n < 0) {
+            /* On Windows, a connected UDP socket may return WSAECONNRESET
+             * when an ICMP "port unreachable" reply arrives (e.g. the
+             * server port was temporarily unreachable).  Abort the send
+             * loop so the failure is visible rather than silently inflating
+             * packets_sent while delivering nothing. */
+#ifdef _WIN32
+            int werr = WSAGetLastError();
+            if (werr == WSAECONNRESET || werr == WSAEHOSTUNREACH ||
+                    werr == WSAENETUNREACH || werr == WSAEHOSTDOWN) {
+                log_error("UDP", "send failed (WSA %d) — aborting UDP stream", werr);
+                break;
+            }
+#else
+            if (errno == ECONNREFUSED || errno == EHOSTUNREACH ||
+                    errno == ENETUNREACH) {
+                log_error("UDP", "send failed (%s) — aborting UDP stream",
+                          strerror(errno));
+                break;
+            }
+#endif
+        }
 
         next_ns += inter_ns;
     }
@@ -377,10 +399,9 @@ int run_udp_client(const char *target_ip, int port,
         log_error("UDP",
                   "failed to retrieve server report — "
                   "receiver-side metrics unavailable");
-        /*
-         * Return 0 with sender-side data rather than failing entirely so
-         * the caller can still display the achieved throughput.
-         */
+        /* Treat all packets as lost so the display is consistent:
+         * packets_received stays 0, and lost_packets matches packets_sent. */
+        result->lost_packets = result->packets_sent;
         return 0;
     }
 

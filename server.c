@@ -207,10 +207,18 @@ static void *udp_listener_thread(void *arg)
 #ifdef _WIN32
             int err = WSAGetLastError();
             if (err == WSAETIMEDOUT || err == WSAEINTR)
+                continue;   /* timeout / signal — keep running */
+            /* WSAECONNRESET / WSAENETRESET: Windows delivers a previous
+             * ICMP "port unreachable" reply via recvfrom on unconnected
+             * UDP sockets.  Ignore it so the listener keeps running. */
+            if (err == WSAECONNRESET || err == WSAENETRESET) {
+                log_debug("SERVER", "UDP listener: ignoring ICMP error %d", err);
+                continue;
+            }
 #else
             if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
-#endif
                 continue;   /* timeout / signal — keep running */
+#endif
             log_debug("SERVER", "UDP recvfrom: %s", strerror(errno));
             break;
         }
@@ -246,8 +254,11 @@ static void *udp_listener_thread(void *arg)
 
         sess_t *s = &g_sessions[found];
 
-        /* Sequence tracking — out-of-order detection */
-        if (pkt->seq_number > s->udp_seq_max)
+        /* Sequence tracking — out-of-order detection.
+         * udp_received == 0 guards the first packet: seq_number and
+         * udp_seq_max are both 0 so without the guard the first packet
+         * would always be mislabelled out-of-order. */
+        if (s->udp_received == 0 || pkt->seq_number > s->udp_seq_max)
             s->udp_seq_max = pkt->seq_number;
         else
             s->udp_out_of_order++;

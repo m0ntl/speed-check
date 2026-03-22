@@ -168,17 +168,47 @@ static void test_udp_zero_sent(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 4.6 Server report unavailable — lost_packets must equal packets_sent */
+/*                                                                      */
+/* When udp_collect_report() fails, run_udp_client() now sets          */
+/* lost_packets = packets_sent so the display is internally consistent: */
+/* the count shown on the "Pkt loss" line must match the percentage.   */
+/* Previously lost_packets stayed 0 from memset, giving "0 (100.0%)". */
+/* ------------------------------------------------------------------ */
+
+static void test_udp_collect_fail_consistent_display(void)
+{
+    /* Populate the result as run_udp_client does when collect fails:
+     * packets_sent and achieved_bw are set; packets_received stays 0;
+     * lost_packets is now set to packets_sent instead of being left at 0. */
+    struct udp_result r = {
+        .packets_sent     = 500,
+        .packets_received = 0,
+        .lost_packets     = 500,   /* was 0 (inconsistent) before the fix */
+        .target_bw_mbps   = 100.0,
+        .achieved_bw_mbps = 98.0,
+    };
+    const char *out = capture_udp(&r);
+    ASSERT_CONTAINS(out, "500 sent");
+    ASSERT_CONTAINS(out, "0 received");
+    /* The loss count and the loss percentage must be consistent. */
+    ASSERT_CONTAINS(out, "500 (100.0%)");
+}
+
+/* ------------------------------------------------------------------ */
 /* Suite runner (called from test_main.c)                              */
 /* ------------------------------------------------------------------ */
 
 void run_udp_tests(void)
 {
-    run_test("udp: no packet loss",           test_udp_no_loss);
-    run_test("udp: packet loss display",      test_udp_with_loss);
-    run_test("udp: jitter µs→ms conversion",  test_udp_jitter_display);
-    run_test("udp: capacity Mbps display",    test_udp_capacity_mbps);
-    run_test("udp: capacity Gbps display",    test_udp_capacity_gbps);
-    run_test("udp: out-of-order line absent", test_udp_no_ooo_line_when_zero);
-    run_test("udp: out-of-order line present",test_udp_ooo_line_shown_when_nonzero);
-    run_test("udp: zero sent no crash",       test_udp_zero_sent);
+    run_test("udp: no packet loss",              test_udp_no_loss);
+    run_test("udp: packet loss display",         test_udp_with_loss);
+    run_test("udp: jitter µs→ms conversion",     test_udp_jitter_display);
+    run_test("udp: capacity Mbps display",       test_udp_capacity_mbps);
+    run_test("udp: capacity Gbps display",       test_udp_capacity_gbps);
+    run_test("udp: out-of-order line absent",    test_udp_no_ooo_line_when_zero);
+    run_test("udp: out-of-order line present",   test_udp_ooo_line_shown_when_nonzero);
+    run_test("udp: zero sent no crash",          test_udp_zero_sent);
+    run_test("udp: collect-fail consistent display",
+             test_udp_collect_fail_consistent_display);
 }
