@@ -337,7 +337,7 @@ typedef struct {
 } AppCtx;
 
 /* ================================================================== */
-#define MENU_ITEMS_CLIENT     6
+#define MENU_ITEMS_CLIENT     7
 #define MENU_ITEMS_SERVER     3
 #define CLIENT_SETTINGS_ITEMS 14   /* 3 UDP items added after Output File */
 #define SERVER_SETTINGS_ITEMS 4
@@ -375,24 +375,22 @@ static void render_main_menu(const AppCtx *ctx)
         snprintf(extra, sizeof(extra), "[pings: %d]", ctx->ping_count);
         render_item(0, sel, "Run Reachability (ICMP)", extra);
 
-        if (ctx->udp_test_mode == 0) {
-            snprintf(extra, sizeof(extra), "[streams: %d, %ds]",
-                     ctx->streams, ctx->duration);
-            render_item(1, sel, "Run Bandwidth (TCP)", extra);
-        } else {
-            snprintf(extra, sizeof(extra), "[%.0f Mbps, %ds, %dB]",
-                     ctx->udp_target_bw, ctx->duration, ctx->udp_pkt_size);
-            render_item(1, sel, "Run UDP (Jitter & Loss)", extra);
-        }
+        snprintf(extra, sizeof(extra), "[streams: %d, %ds]",
+                 ctx->streams, ctx->duration);
+        render_item(1, sel, "Run Bandwidth (TCP)", extra);
+
+        snprintf(extra, sizeof(extra), "[%.0f Mbps, %ds, %dB]",
+                 ctx->udp_target_bw, ctx->duration, ctx->udp_pkt_size);
+        render_item(2, sel, "Run UDP (Jitter & Loss)", extra);
 
         snprintf(extra, sizeof(extra), "[port: %d]", ctx->port);
-        render_item(2, sel, "Start Server", extra);
+        render_item(3, sel, "Start Server", extra);
 
         snprintf(extra, sizeof(extra), "[%d test(s)]", test_count);
-        render_item(3, sel, "View Session History", extra);
+        render_item(4, sel, "View Session History", extra);
 
-        render_item(4, sel, "Settings", "");
-        render_item(5, sel, "Exit", "");
+        render_item(5, sel, "Settings", "");
+        render_item(6, sel, "Exit", "");
     } else {
         snprintf(extra, sizeof(extra), "[port: %d]", ctx->port);
         render_item(0, sel, "Start Server", extra);
@@ -927,6 +925,7 @@ static void update_logic(AppCtx *ctx, int key)
                 switch (ctx->sel) {
                 case 0:
                 case 1:
+                case 2:
                     if (!ctx->target_ip_buf[0]) {
                         read_str_field("Target IP", ctx->target_ip_buf,
                                        sizeof(ctx->target_ip_buf));
@@ -938,14 +937,16 @@ static void update_logic(AppCtx *ctx, int key)
                     }
                     if (ctx->sel == 0)
                         ctx->test_type = TEST_ICMP;
+                    else if (ctx->sel == 1)
+                        ctx->test_type = TEST_TCP;
                     else
-                        ctx->test_type = (ctx->udp_test_mode) ? TEST_UDP : TEST_TCP;
+                        ctx->test_type = TEST_UDP;
                     ctx->state = STATE_RUNNING_TEST;
                     break;
-                case 2: ctx->state = STATE_RUNNING_SERVER;                             break;
-                case 3: ctx->state = STATE_VIEW_HISTORY;                               break;
-                case 4: ctx->state = STATE_SETTINGS; ctx->sel = 0;                    break;
-                case 5: ctx->state = STATE_EXIT;                                       break;
+                case 3: ctx->state = STATE_RUNNING_SERVER;                             break;
+                case 4: ctx->state = STATE_VIEW_HISTORY;                               break;
+                case 5: ctx->state = STATE_SETTINGS; ctx->sel = 0;                    break;
+                case 6: ctx->state = STATE_EXIT;                                       break;
                 }
             } else {
                 switch (ctx->sel) {
