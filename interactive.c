@@ -813,7 +813,7 @@ static void execute_test(AppCtx *ctx)
         get_timestamp(r.timestamp, sizeof(r.timestamp));
         history_append(&r);
 
-    } else {
+    } else if (ctx->test_type == TEST_TCP) {
         render_running("TCP Bandwidth", ctx->target_ip_buf);
 
         struct client_args args = {
@@ -858,7 +858,7 @@ static void execute_test(AppCtx *ctx)
         get_timestamp(r.timestamp, sizeof(r.timestamp));
         history_append(&r);
 
-    } else {
+    } else if (ctx->test_type == TEST_UDP) {
         /* TEST_UDP */
         render_running("UDP (Jitter & Loss)", ctx->target_ip_buf);
 
