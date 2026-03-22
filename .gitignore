@@ -1,0 +1,33 @@
+# Build outputs
+spdchk
+spdchk.exe
+*.o
+*.a
+*.so
+*.dll
+*.exe
+
+# Test binary
+spdchk_test
+spdchk_test.exe
+tests/*.o
+test_report.txt
+
+# Windows resource compiled object
+spdchk.res
+*.bkp
+
+# Log files
+spdchk.log
+*.log
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
