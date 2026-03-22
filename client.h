@@ -1,6 +1,8 @@
 #ifndef CLIENT_H
 #define CLIENT_H
 
+#include "udp.h"
+
 /*
  * client_args — configuration bundle for the test client.
  */
@@ -15,6 +17,10 @@ struct client_args {
     int         dss_mode;           /* 1 = Dynamic Stream Scaling; 0 = static   */
     int         dss_window_ms;      /* DSS sampling window in ms  (default 500) */
     int         skip_version_check; /* 1 = skip Phase 0 handshake (already done) */
+    /* UDP test parameters (used when test_mode == TEST_MODE_UDP)               */
+    int         test_mode;          /* TEST_MODE_TCP (0) or TEST_MODE_UDP (1)   */
+    double      udp_target_bw;      /* target bit-rate in Mbps (default 100)    */
+    int         udp_pkt_size;       /* datagram size in bytes (default 1472)    */
 };
 
 /*
@@ -22,9 +28,11 @@ struct client_args {
  * Allows callers such as interactive mode to process results programmatically.
  */
 struct run_client_result {
-    double throughput_gbps;   /* total bandwidth measured in Gbps                        */
-    double reliability_score; /* (bytes_received / bytes_sent) * 100; 0 when unverified  */
-    int    is_verified;       /* 1 = server confirmed via Phase 3; 0 = local estimate    */
+    double   throughput_gbps;   /* total bandwidth measured in Gbps                        */
+    double   reliability_score; /* (bytes_received / bytes_sent) * 100; 0 when unverified  */
+    int      is_verified;       /* 1 = server confirmed via Phase 3; 0 = local estimate    */
+    /* UDP test results — populated when test_mode == TEST_MODE_UDP; zero otherwise */
+    struct udp_result udp;
 };
 
 /*

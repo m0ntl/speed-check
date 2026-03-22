@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include "udp.h"
 
 /* ICMP phase summary */
 struct ping_result {
@@ -50,5 +51,12 @@ void print_bandwidth(FILE *out, const struct bandwidth_result *bw);
  */
 void print_results_json(FILE *out, const struct ping_result *ping,
                         const struct bandwidth_result *bw);
+
+/*
+ * print_udp_metrics — display a UDP jitter/loss test result table:
+ *   Sent/Received counts, Packet Loss (% and raw), Jitter (avg, peak),
+ *   and Capacity (achieved vs. target throughput).
+ */
+void print_udp_metrics(FILE *out, const struct udp_result *r);
 
 #endif /* METRICS_H */

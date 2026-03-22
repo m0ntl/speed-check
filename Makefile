@@ -12,7 +12,7 @@ CFLAGS = -Wall -Wextra -std=c11 -O2
 # --------------------------------------------------------------------
 
 # Sources shared by all platforms
-BASE_SRCS = server.c client.c metrics.c interactive.c telemetry.c
+BASE_SRCS = server.c client.c metrics.c interactive.c telemetry.c udp.c
 
 ifeq ($(OS),Windows_NT)
     CFLAGS  += -D_DEFAULT_SOURCE
@@ -64,7 +64,8 @@ TEST_OBJS = \
 	$(TEST_OBJ_DIR)/icmp_t.o      \
 	$(TEST_OBJ_DIR)/client_t.o    \
 	$(TEST_OBJ_DIR)/logger_t.o    \
-	$(TEST_OBJ_DIR)/telemetry_t.o
+	$(TEST_OBJ_DIR)/telemetry_t.o \
+	$(TEST_OBJ_DIR)/udp_t.o
 
 $(TEST_OBJ_DIR):
 	mkdir -p $@
@@ -84,11 +85,15 @@ $(TEST_OBJ_DIR)/logger_t.o: logger.c | $(TEST_OBJ_DIR)
 $(TEST_OBJ_DIR)/telemetry_t.o: telemetry.c | $(TEST_OBJ_DIR)
 	$(CC) $(TEST_CFLAGS) -c -o $@ $<
 
+$(TEST_OBJ_DIR)/udp_t.o: udp.c | $(TEST_OBJ_DIR)
+	$(CC) $(TEST_CFLAGS) -include tests/mock_sockets.h -c -o $@ $<
+
 .PHONY: test
 test: $(TEST_OBJS)
 	$(CC) $(TEST_CFLAGS) \
 	    tests/test_main.c   tests/test_metrics.c \
 	    tests/test_protocol.c tests/test_icmp_privs.c \
+	    tests/test_udp.c \
 	    tests/mock_sockets.c \
 	    $(TEST_OBJS) -o spdchk_test -lm -lpthread
 	./spdchk_test

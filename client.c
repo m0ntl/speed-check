@@ -20,6 +20,7 @@
 #include "logger.h"
 #include "metrics.h"
 #include "telemetry.h"
+#include "udp.h"
 
 static int connect_timed(int fd, const struct sockaddr *addr, socklen_t len, int timeout_ms);
 #include "spdchk.h"
@@ -497,6 +498,71 @@ int run_client_ex(const struct client_args *args, struct run_client_result *resu
     /* ------------------------------------------------------------------ */
     /* Phase 1 (ICMP reachability) removed — TCP test runs directly.       */
     /* ------------------------------------------------------------------ */
+
+    /* ------------------------------------------------------------------ */
+    /* Phase 2 (UDP): Jitter and packet-loss test                          */
+    /* ------------------------------------------------------------------ */
+    if (args->test_mode == TEST_MODE_UDP) {
+        struct udp_result udp_res = {0};
+        int udp_pkt  = (args->udp_pkt_size  > 0) ? args->udp_pkt_size  : DEFAULT_PKT_SIZE;
+        double udp_bw = (args->udp_target_bw > 0) ? args->udp_target_bw : DEFAULT_UDP_BW;
+
+        log_info("CLIENT",
+                 "Phase 2 — UDP test: %.1f Mbps pkt=%d B dur=%d s → %s:%d",
+                 udp_bw, udp_pkt, args->duration, args->target_ip, args->port);
+
+        int udp_rc = run_udp_client(args->target_ip, args->port,
+                                     udp_bw, udp_pkt,
+                                     args->duration, &udp_res);
+        if (udp_rc != 0)
+            return -1;
+
+        if (result) {
+            result->udp              = udp_res;
+            result->throughput_gbps  = udp_res.achieved_bw_mbps / 1000.0;
+            result->reliability_score = (udp_res.packets_sent > 0)
+                ? (double)udp_res.packets_received
+                  / (double)udp_res.packets_sent * 100.0
+                : 0.0;
+            result->is_verified = 1;   /* server-confirmed packet count */
+        }
+
+        /* Output path validation (same rules as TCP path). */
+        FILE *out = stdout;
+        if (args->output_path) {
+            const char *op = args->output_path;
+            int has_traversal = (strncmp(op, "..", 2) == 0 &&
+                                 (op[2] == '\0' || op[2] == '/' || op[2] == '\\'));
+            if (!has_traversal) {
+                for (const char *p = op; *p && !has_traversal; p++) {
+                    if ((*p == '/' || *p == '\\') &&
+                            p[1] == '.' && p[2] == '.' &&
+                            (p[3] == '\0' || p[3] == '/' || p[3] == '\\'))
+                        has_traversal = 1;
+                }
+            }
+            if (has_traversal) {
+                log_error("CLIENT",
+                          "output path '%s' contains '..' — "
+                          "directory traversal is not permitted",
+                          args->output_path);
+                return -1;
+            }
+            out = fopen(args->output_path, "w");
+            if (!out) {
+                log_error("CLIENT", "fopen '%s': %s",
+                          args->output_path, strerror(errno));
+                return -1;
+            }
+        }
+
+        print_udp_metrics(out, &udp_res);
+
+        if (out != stdout)
+            fclose(out);
+
+        return 0;
+    }
 
     /* ------------------------------------------------------------------ */
     /* Phase 2: Parallel TCP bandwidth measurement                         */

@@ -16,6 +16,8 @@
 #include "server.h"
 #include "icmp.h"
 #include "spdchk.h"
+#include "udp.h"
+#include "metrics.h"
 
 /* ================================================================== */
 /* ANSI escape codes                                                    */
@@ -54,19 +56,26 @@ typedef enum {
     STATE_EXIT
 } AppState;
 
-typedef enum { TEST_ICMP = 0, TEST_TCP = 1 } TestType;
+typedef enum { TEST_ICMP = 0, TEST_TCP = 1, TEST_UDP = 2 } TestType;
 
 /* ================================================================== */
 /* Session history — volatile dynamic array, freed on exit             */
 /* ================================================================== */
 typedef struct {
-    char   test_type[8];  /* "ICMP" or "TCP"                     */
-    int    streams;       /* TCP parameter; 0 for ICMP-only runs */
-    int    duration;      /* TCP parameter; 0 for ICMP-only runs */
-    double throughput;    /* Gbps; 0 for ICMP-only runs          */
+    char   test_type[8];  /* "ICMP", "TCP", or "UDP"              */
+    int    streams;       /* TCP parameter; 0 for ICMP/UDP runs  */
+    int    duration;      /* TCP/UDP duration; 0 for ICMP runs   */
+    double throughput;    /* Gbps for TCP; achieved Mbps for UDP */
     double latency;       /* ms; -1 if target unreachable        */
     double reliability_score; /* TCP only; 0 when unverified     */
     int    is_verified;       /* TCP only; 1 when Phase 3 confirmed */
+    /* UDP-specific */
+    uint32_t udp_sent;
+    uint32_t udp_received;
+    uint32_t udp_lost;
+    double   udp_jitter_us;
+    double   udp_target_bw;
+    double   udp_achieved_bw;
     char   timestamp[20];
 } TestResult;
 
@@ -306,6 +315,10 @@ typedef struct {
     int      json_output;
     char     output_path[256];
     int      version_checked;    /* 0 = handshake needed before next TCP run */
+    /* UDP params */
+    int      udp_test_mode;      /* 0 = TCP bandwidth, 1 = UDP jitter/loss  */
+    double   udp_target_bw;      /* Mbps, default DEFAULT_UDP_BW            */
+    int      udp_pkt_size;       /* bytes, default DEFAULT_PKT_SIZE         */
     /* server params */
     int      port;
     int      max_dur;
@@ -326,7 +339,7 @@ typedef struct {
 /* ================================================================== */
 #define MENU_ITEMS_CLIENT     6
 #define MENU_ITEMS_SERVER     3
-#define CLIENT_SETTINGS_ITEMS 11
+#define CLIENT_SETTINGS_ITEMS 14   /* 3 UDP items added after Output File */
 #define SERVER_SETTINGS_ITEMS 4
 #define UI_WRAP(x, n)  (((x) % (n) + (n)) % (n))
 
@@ -362,9 +375,15 @@ static void render_main_menu(const AppCtx *ctx)
         snprintf(extra, sizeof(extra), "[pings: %d]", ctx->ping_count);
         render_item(0, sel, "Run Reachability (ICMP)", extra);
 
-        snprintf(extra, sizeof(extra), "[streams: %d, %ds]",
-                 ctx->streams, ctx->duration);
-        render_item(1, sel, "Run Bandwidth (TCP)", extra);
+        if (ctx->udp_test_mode == 0) {
+            snprintf(extra, sizeof(extra), "[streams: %d, %ds]",
+                     ctx->streams, ctx->duration);
+            render_item(1, sel, "Run Bandwidth (TCP)", extra);
+        } else {
+            snprintf(extra, sizeof(extra), "[%.0f Mbps, %ds, %dB]",
+                     ctx->udp_target_bw, ctx->duration, ctx->udp_pkt_size);
+            render_item(1, sel, "Run UDP (Jitter & Loss)", extra);
+        }
 
         snprintf(extra, sizeof(extra), "[port: %d]", ctx->port);
         render_item(2, sel, "Start Server", extra);
@@ -427,7 +446,14 @@ static void render_settings(const AppCtx *ctx)
         snprintf(extra, sizeof(extra), "(current: %s)",
                  ctx->output_path[0] ? ctx->output_path : "<stdout>");
         render_item(9, sel, "Output File", extra);
-        render_item(10, sel, "Back", "");
+        snprintf(extra, sizeof(extra), "(current: %s)",
+                 ctx->udp_test_mode ? "UDP (Jitter & Loss)" : "TCP (Bandwidth)");
+        render_item(10, sel, "Test Type", extra);
+        snprintf(extra, sizeof(extra), "(current: %.0f Mbps)", ctx->udp_target_bw);
+        render_item(11, sel, "UDP Target BW", extra);
+        snprintf(extra, sizeof(extra), "(current: %d B)", ctx->udp_pkt_size);
+        render_item(12, sel, "UDP Pkt Size", extra);
+        render_item(13, sel, "Back", "");
     } else {
         /* Server settings */
         render_item(0, sel, "Mode",
@@ -540,6 +566,50 @@ static void render_bw_results(const struct run_client_result *r,
             printf("  Reliability: " A_BOLD "%.1f%% (%s)\n" A_RESET,
                    r->reliability_score, rating);
         }
+    }
+
+    printf(THIN_LINE);
+    printf(A_DIM "  Press any key to return...\n" A_RESET);
+    fflush(stdout);
+}
+
+/* ------------------------------------------------------------------ */
+/* UDP results                                                         */
+/* ------------------------------------------------------------------ */
+static void render_udp_results(const struct run_client_result *r, int failed)
+{
+    printf(A_CLEAR);
+    printf(A_BOLD SEP_LINE A_RESET);
+    printf(A_BOLD "  UDP Jitter & Loss Results\n" A_RESET);
+    printf(THIN_LINE);
+
+    if (failed) {
+        printf("  " A_YELLOW "UDP test failed.\n" A_RESET);
+    } else {
+        const struct udp_result *u = &r->udp;
+        double loss_pct = (u->packets_sent > 0)
+            ? (double)u->lost_packets / (double)u->packets_sent * 100.0
+            : 0.0;
+
+        printf("  Packets:     " A_BOLD "%u sent, %u received\n" A_RESET,
+               u->packets_sent, u->packets_received);
+        printf("  Pkt Loss:    " A_BOLD "%u (%.1f%%)\n" A_RESET,
+               u->lost_packets, loss_pct);
+        if (u->out_of_order > 0)
+            printf("  Out-order:   " A_BOLD "%u\n" A_RESET, u->out_of_order);
+        printf("  Jitter avg:  " A_BOLD "%.3f ms\n" A_RESET,
+               u->jitter_us / 1000.0);
+        printf("  Jitter peak: " A_BOLD "%.3f ms\n" A_RESET,
+               u->peak_jitter_us / 1000.0);
+        if (u->target_bw_mbps >= 1000.0)
+            printf("  Capacity:    " A_BOLD "%.3f Gbps" A_RESET
+                   " achieved / %.3f Gbps target\n",
+                   u->achieved_bw_mbps / 1000.0,
+                   u->target_bw_mbps   / 1000.0);
+        else
+            printf("  Capacity:    " A_BOLD "%.1f Mbps" A_RESET
+                   " achieved / %.1f Mbps target\n",
+                   u->achieved_bw_mbps, u->target_bw_mbps);
     }
 
     printf(THIN_LINE);
@@ -680,6 +750,37 @@ static void render_history(void)
         }
         if (tcp_printed == 0)
             printf("  No TCP tests recorded.\n");
+
+        printf("\n");
+
+        /* ---- UDP / Jitter table ---- */
+        printf(A_BOLD A_CYAN "  UDP / Jitter & Loss Results\n" A_RESET);
+        printf(THIN_LINE);
+
+        int udp_printed = 0;
+        for (int i = 0; i < test_count; i++) {
+            const TestResult *c = &session_history[i];
+            if (strcmp(c->test_type, "UDP") != 0)
+                continue;
+            if (udp_printed == 0) {
+                printf(A_BOLD "  %-3s  %-19s  %-4s  %-8s  %-8s  %-10s\n"
+                       A_RESET,
+                       "#", "Timestamp", "Dur",
+                       "Sent", "Lost%", "Jitter");
+                printf(THIN_LINE);
+            }
+            udp_printed++;
+            double loss_pct = (c->udp_sent > 0)
+                ? (double)c->udp_lost / (double)c->udp_sent * 100.0 : 0.0;
+            char jit_str[16];
+            snprintf(jit_str, sizeof(jit_str), "%.3f ms",
+                     c->udp_jitter_us / 1000.0);
+            printf("  %-3d  %-19s  %-4d  %-8u  %-7.1f%%  %s\n",
+                   udp_printed, c->timestamp, c->duration,
+                   c->udp_sent, loss_pct, jit_str);
+        }
+        if (udp_printed == 0)
+            printf("  No UDP tests recorded.\n");
     }
 
     printf(THIN_LINE);
@@ -726,6 +827,7 @@ static void execute_test(AppCtx *ctx)
             .dss_mode           = ctx->dss_mode,
             .dss_window_ms      = ctx->dss_window_ms,
             .skip_version_check = ctx->version_checked,
+            .test_mode          = TEST_MODE_TCP,
         };
 
         struct run_client_result bw = {0};
@@ -747,6 +849,59 @@ static void execute_test(AppCtx *ctx)
         r.latency            = -1.0;
         r.reliability_score  = (rc == 0) ? bw.reliability_score : 0.0;
         r.is_verified        = (rc == 0) ? bw.is_verified : 0;
+        r.udp_sent           = 0;
+        r.udp_received       = 0;
+        r.udp_lost           = 0;
+        r.udp_jitter_us      = 0.0;
+        r.udp_target_bw      = 0.0;
+        r.udp_achieved_bw    = 0.0;
+        get_timestamp(r.timestamp, sizeof(r.timestamp));
+        history_append(&r);
+
+    } else {
+        /* TEST_UDP */
+        render_running("UDP (Jitter & Loss)", ctx->target_ip_buf);
+
+        struct client_args args = {
+            .target_ip          = ctx->target_ip_buf,
+            .port               = ctx->port,
+            .ping_count         = ctx->ping_count,
+            .duration           = ctx->duration,
+            .streams            = ctx->streams,
+            .json_output        = ctx->json_output,
+            .output_path        = ctx->output_path[0] ? ctx->output_path : NULL,
+            .dss_mode           = 0,
+            .dss_window_ms      = ctx->dss_window_ms,
+            .skip_version_check = ctx->version_checked,
+            .test_mode          = TEST_MODE_UDP,
+            .udp_target_bw      = ctx->udp_target_bw,
+            .udp_pkt_size       = ctx->udp_pkt_size,
+        };
+
+        struct run_client_result bw = {0};
+        int rc = run_client_ex(&args, &bw);
+
+        ctx->version_checked = (rc == 0) ? 1 : 0;
+        ctx->last_bw_streams  = 0;
+        ctx->last_bw_duration = ctx->duration;
+        ctx->last_bw_failed   = rc;
+        ctx->last_bw          = bw;
+
+        TestResult r;
+        strncpy(r.test_type, "UDP", sizeof(r.test_type));
+        r.test_type[sizeof(r.test_type) - 1] = '\0';
+        r.streams            = 0;
+        r.duration           = ctx->duration;
+        r.throughput         = 0.0;
+        r.latency            = -1.0;
+        r.reliability_score  = 0.0;
+        r.is_verified        = 0;
+        r.udp_sent           = (rc == 0) ? bw.udp.packets_sent     : 0;
+        r.udp_received       = (rc == 0) ? bw.udp.packets_received : 0;
+        r.udp_lost           = (rc == 0) ? bw.udp.lost_packets     : 0;
+        r.udp_jitter_us      = (rc == 0) ? bw.udp.jitter_us        : 0.0;
+        r.udp_target_bw      = ctx->udp_target_bw;
+        r.udp_achieved_bw    = (rc == 0) ? bw.udp.achieved_bw_mbps : 0.0;
         get_timestamp(r.timestamp, sizeof(r.timestamp));
         history_append(&r);
     }
@@ -781,7 +936,10 @@ static void update_logic(AppCtx *ctx, int key)
                         snprintf(ctx->server_str, sizeof(ctx->server_str),
                                  "%s:%d", ctx->target_ip_buf, ctx->port);
                     }
-                    ctx->test_type = (ctx->sel == 0) ? TEST_ICMP : TEST_TCP;
+                    if (ctx->sel == 0)
+                        ctx->test_type = TEST_ICMP;
+                    else
+                        ctx->test_type = (ctx->udp_test_mode) ? TEST_UDP : TEST_TCP;
                     ctx->state = STATE_RUNNING_TEST;
                     break;
                 case 2: ctx->state = STATE_RUNNING_SERVER;                             break;
@@ -867,6 +1025,22 @@ static void update_logic(AppCtx *ctx, int key)
                                    sizeof(ctx->output_path));
                     break;
                 case 10:
+                    ctx->udp_test_mode = !ctx->udp_test_mode;
+                    break;
+                case 11:
+                    {
+                        int bw_int = (int)ctx->udp_target_bw;
+                        bw_int = read_int_field("UDP Target BW (Mbps)",
+                                                1, 100000, bw_int);
+                        ctx->udp_target_bw = (double)bw_int;
+                    }
+                    break;
+                case 12:
+                    ctx->udp_pkt_size = read_int_field("UDP Pkt Size (bytes)",
+                                                       16, 65507,
+                                                       ctx->udp_pkt_size);
+                    break;
+                case 13:
                     ctx->state = STATE_MAIN_MENU;
                     ctx->sel   = 4;
                     break;
@@ -918,6 +1092,8 @@ static void render_current_screen(const AppCtx *ctx)
     case STATE_VIEW_RESULTS:
         if (ctx->test_type == TEST_ICMP)
             render_icmp_results(&ctx->last_icmp, ctx->last_icmp_rc);
+        else if (ctx->test_type == TEST_UDP)
+            render_udp_results(&ctx->last_bw, ctx->last_bw_failed);
         else
             render_bw_results(&ctx->last_bw,
                                ctx->last_bw_streams,
@@ -967,6 +1143,9 @@ int interactive_main(void)
     ctx.dss_window_ms    = DSS_WINDOW_MS;
     ctx.json_output      = 0;
     ctx.version_checked  = 0;
+    ctx.udp_test_mode    = 0;
+    ctx.udp_target_bw    = DEFAULT_UDP_BW;
+    ctx.udp_pkt_size     = DEFAULT_PKT_SIZE;
     ctx.max_dur          = 0;
     ctx.last_icmp_rc     = -1;
     ctx.last_bw_streams  = 0;

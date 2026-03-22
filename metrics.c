@@ -123,3 +123,35 @@ void print_results_json(FILE *out, const struct ping_result *ping,
     fprintf(out, "\n  }\n");
     fprintf(out, "}\n");
 }
+
+void print_udp_metrics(FILE *out, const struct udp_result *r)
+{
+    fprintf(out, "\n--- UDP statistics ---\n");
+
+    fprintf(out, "Packets  : %u sent, %u received\n",
+            r->packets_sent, r->packets_received);
+
+    double loss_pct = (r->packets_sent > 0)
+        ? (double)(r->packets_sent - r->packets_received)
+          / (double)r->packets_sent * 100.0
+        : 0.0;
+    fprintf(out, "Pkt loss : %u (%.1f%%)\n", r->lost_packets, loss_pct);
+
+    if (r->out_of_order > 0)
+        fprintf(out, "Out-order: %u\n", r->out_of_order);
+
+    fprintf(out, "Jitter   : avg=%.3f ms  peak=%.3f ms\n",
+            r->jitter_us     / 1000.0,
+            r->peak_jitter_us / 1000.0);
+
+    if (r->target_bw_mbps >= 1000.0)
+        fprintf(out,
+                "Capacity : %.3f Gbps achieved  /  %.3f Gbps target\n",
+                r->achieved_bw_mbps / 1000.0,
+                r->target_bw_mbps   / 1000.0);
+    else
+        fprintf(out,
+                "Capacity : %.1f Mbps achieved  /  %.1f Mbps target\n",
+                r->achieved_bw_mbps,
+                r->target_bw_mbps);
+}

@@ -46,6 +46,7 @@ void run_test(const char *name, void (*fn)(void))
 void run_metrics_tests(void);
 void run_protocol_tests(void);
 void run_icmp_priv_tests(void);
+void run_udp_tests(void);
 
 /* ------------------------------------------------------------------ */
 /* Entry point                                                          */
@@ -66,6 +67,9 @@ int main(void)
 
     printf("\n-- ICMP Privilege Handling --\n");
     run_icmp_priv_tests();
+
+    printf("\n-- UDP Metrics --\n");
+    run_udp_tests();
 
     printf("\n=== Results: %d/%d passed", g_tests_passed, g_tests_run);
     if (g_tests_failed)
