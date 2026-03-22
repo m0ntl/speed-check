@@ -278,6 +278,7 @@ static void *udp_listener_thread(void *arg)
 
 static void *handle_connection(void *arg)
 {
+    struct conn_arg   *ctx         = arg;
     int                fd           = ctx->fd;
     int                max_duration = ctx->max_duration;
     struct sockaddr_in peer         = ctx->peer;
