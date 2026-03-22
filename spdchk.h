@@ -18,7 +18,7 @@
  * The CI/CD pipeline reads this value to name every release automatically.
  * Bump it here before merging the commit that should carry the new version.
  */
-#define SPDCHK_VERSION "0.15.4"
+#define SPDCHK_VERSION "0.16.0"
 
 #define DEFAULT_PORT       2200
 #define DEFAULT_COUNT      4    /* ICMP pings per test (spec §3.2)       */
@@ -83,8 +83,9 @@ typedef struct {
  *   SPDCHK_UDP_DONE <packets_sent>\n
  *     → server replies "SPDCHK_UDP_REPORT <rx> <ooo> <jitter_us> <peak_us>\n"
  */
-#define SPDCHK_UDP_REQ_PREFIX  "SPDCHK_UDP_REQ"
-#define SPDCHK_UDP_DONE_PREFIX "SPDCHK_UDP_DONE"
+#define SPDCHK_UDP_REQ_PREFIX   "SPDCHK_UDP_REQ"
+#define SPDCHK_UDP_DONE_PREFIX  "SPDCHK_UDP_DONE"
+#define SPDCHK_UDP_CHECK_PREFIX "SPDCHK_UDP_CHECK"
 
 /*
  * spdchk_udp_payload — packed UDP measurement frame.

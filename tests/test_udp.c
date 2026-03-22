@@ -1,15 +1,15 @@
 /*
- * test_udp.c — Unit tests for UDP metrics output (print_udp_metrics).
+ * test_udp.c — Unit tests for UDP metrics output (print_udp_metrics)
+ *              and UDP preflight query response parsing.
  *
- * No socket mocking is required because print_udp_metrics() is a pure
- * formatting function that takes a pre-populated udp_result struct and
- * writes to a FILE stream.  fmemopen() captures the output into a fixed
- * buffer for inspection.
+ * print_udp_metrics() tests use fmemopen() to capture output.
+ * udp_preflight_query() tests use mock_sockets to stage canned responses.
  */
 
 #include <stdio.h>
 #include <string.h>
 #include "harness.h"
+#include "mock_sockets.h"
 #include "../udp.h"
 #include "../metrics.h"
 
@@ -196,6 +196,66 @@ static void test_udp_collect_fail_consistent_display(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 4.7 Preflight query: server confirms probes arrived                 */
+/* ------------------------------------------------------------------ */
+
+static void test_udp_preflight_ok(void)
+{
+    mock_reset();
+    const char *resp = "SPDCHK_UDP_CHECK 3\n";
+    memcpy(mock_recv_buf, resp, strlen(resp));
+    mock_recv_len = (int)strlen(resp);
+
+    int rx = udp_preflight_query("127.0.0.1", 9999);
+    ASSERT_EQ_INT(rx, 3);
+}
+
+/* ------------------------------------------------------------------ */
+/* 4.8 Preflight query: server received zero probes (port blocked)     */
+/* ------------------------------------------------------------------ */
+
+static void test_udp_preflight_zero(void)
+{
+    mock_reset();
+    const char *resp = "SPDCHK_UDP_CHECK 0\n";
+    memcpy(mock_recv_buf, resp, strlen(resp));
+    mock_recv_len = (int)strlen(resp);
+
+    int rx = udp_preflight_query("127.0.0.1", 9999);
+    ASSERT_EQ_INT(rx, 0);
+}
+
+/* ------------------------------------------------------------------ */
+/* 4.9 Preflight query: unrecognised response (old server)             */
+/* ------------------------------------------------------------------ */
+
+static void test_udp_preflight_old_server(void)
+{
+    mock_reset();
+    /* An older server without SPDCHK_UDP_CHECK support would fall through
+     * to the data drain handler and eventually close the connection.
+     * The response would be empty or unrecognised. */
+    mock_recv_len = 0;   /* EOF immediately */
+
+    int rx = udp_preflight_query("127.0.0.1", 9999);
+    ASSERT_EQ_INT(rx, -1);
+}
+
+/* ------------------------------------------------------------------ */
+/* 4.10 Preflight query: TCP connect failure                           */
+/* ------------------------------------------------------------------ */
+
+static void test_udp_preflight_connect_fail(void)
+{
+    mock_reset();
+    mock_socket_return = -1;
+    mock_socket_errno  = ECONNREFUSED;
+
+    int rx = udp_preflight_query("127.0.0.1", 9999);
+    ASSERT_EQ_INT(rx, -1);
+}
+
+/* ------------------------------------------------------------------ */
 /* Suite runner (called from test_main.c)                              */
 /* ------------------------------------------------------------------ */
 
@@ -211,4 +271,12 @@ void run_udp_tests(void)
     run_test("udp: zero sent no crash",          test_udp_zero_sent);
     run_test("udp: collect-fail consistent display",
              test_udp_collect_fail_consistent_display);
+    run_test("udp: preflight OK (server confirms probes)",
+             test_udp_preflight_ok);
+    run_test("udp: preflight zero (port blocked)",
+             test_udp_preflight_zero);
+    run_test("udp: preflight old server (unrecognised)",
+             test_udp_preflight_old_server);
+    run_test("udp: preflight connect failure",
+             test_udp_preflight_connect_fail);
 }

@@ -254,6 +254,54 @@ static int udp_collect_report(const char *ip, int port,
 }
 
 /* ------------------------------------------------------------------ */
+/* Preflight check — send a few probes, then ask the server whether    */
+/* any arrived.  Detects blocked UDP ports early so the user does not  */
+/* waste the full test duration sending into a black hole.              */
+/* ------------------------------------------------------------------ */
+
+#define PREFLIGHT_PROBES  3     /* number of test packets to send       */
+#define PREFLIGHT_WAIT_MS 300   /* pause before querying the server     */
+
+/*
+ * Query the server via TCP: "SPDCHK_UDP_CHECK\n"
+ * Expected reply: "SPDCHK_UDP_CHECK <rx>\n"
+ * Returns the rx count, or -1 on communication error (e.g. old server).
+ */
+#ifdef TEST_MODE
+int udp_preflight_query(const char *ip, int port)
+#else
+static int udp_preflight_query(const char *ip, int port)
+#endif
+{
+    int ctrl = udp_tcp_connect(ip, port, 5);
+    if (ctrl < 0)
+        return -1;
+
+    const char *req = "SPDCHK_UDP_CHECK\n";
+    if (send(ctrl, req, strlen(req), MSG_NOSIGNAL) < 0) {
+        sock_close(ctrl);
+        return -1;
+    }
+
+    char resp[64] = {0};
+    int  ri = 0;
+    char c;
+    while (ri < (int)sizeof(resp) - 1) {
+        ssize_t r = recv(ctrl, &c, 1, 0);
+        if (r <= 0) break;
+        resp[ri++] = c;
+        if (c == '\n') break;
+    }
+    resp[ri] = '\0';
+    sock_close(ctrl);
+
+    unsigned rx = 0;
+    if (sscanf(resp, "SPDCHK_UDP_CHECK %u", &rx) != 1)
+        return -1;   /* unrecognised response — old server or error */
+    return (int)rx;
+}
+
+/* ------------------------------------------------------------------ */
 /* run_udp_client — public entry point                                  */
 /* ------------------------------------------------------------------ */
 
@@ -315,6 +363,37 @@ int run_udp_client(const char *target_ip, int port,
 
     struct spdchk_udp_payload *hdr = (struct spdchk_udp_payload *)pkt_buf;
     hdr->magic_id = SPDCHK_UDP_MAGIC;
+
+    /* ---- Preflight: send a few probes and verify arrival ---------- */
+    for (int i = 0; i < PREFLIGHT_PROBES; i++) {
+        hdr->seq_number   = (uint32_t)i;
+        hdr->timestamp_ns = udp_time_ns();
+        send(udp_sock, pkt_buf, (size_t)pkt_size, MSG_NOSIGNAL);
+    }
+#ifdef _WIN32
+    Sleep(PREFLIGHT_WAIT_MS);
+#else
+    {
+        struct timespec delay = {
+            .tv_sec  = PREFLIGHT_WAIT_MS / 1000,
+            .tv_nsec = (long)(PREFLIGHT_WAIT_MS % 1000) * 1000000L
+        };
+        nanosleep(&delay, NULL);
+    }
+#endif
+    int pre_rx = udp_preflight_query(target_ip, port);
+    if (pre_rx == 0) {
+        log_error("UDP",
+                  "preflight failed — server received 0 of %d probe packets; "
+                  "UDP port %d appears blocked by a firewall",
+                  PREFLIGHT_PROBES, port);
+        free(pkt_buf);
+        sock_close(udp_sock);
+        return -1;
+    }
+    if (pre_rx > 0)
+        log_debug("UDP", "preflight OK — server received %d/%d probes",
+                  pre_rx, PREFLIGHT_PROBES);
 
     /*
      * Inter-packet interval in nanoseconds for constant bit-rate sending:

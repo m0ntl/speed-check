@@ -476,6 +476,56 @@ static void *handle_connection(void *arg)
     }
 
     /* -------------------------------------------------------------- */
+    /* UDP preflight check — client sends "SPDCHK_UDP_CHECK\n"         */
+    /* Server replies "SPDCHK_UDP_CHECK <rx>\n" with the current       */
+    /* received-packet count for that IP, then resets the UDP counters  */
+    /* so the main test starts with a clean slate.                     */
+    /* -------------------------------------------------------------- */
+    if (pn >= 16 && memcmp(peek, SPDCHK_UDP_CHECK_PREFIX, 16) == 0) {
+        char line[64];
+        int  li = 0;
+        char ch;
+        while (li < (int)sizeof(line) - 1) {
+            if (recv(fd, &ch, 1, 0) <= 0) break;
+            line[li++] = ch;
+            if (ch == '\n') break;
+        }
+        line[li] = '\0';
+
+        uint32_t peer_ip = (uint32_t)peer.sin_addr.s_addr;
+        uint32_t rx = 0;
+
+        pthread_mutex_lock(&g_sess_mtx);
+        for (int i = 0; i < MAX_SESSIONS; i++) {
+            if (g_sessions[i].ip == peer_ip && g_sessions[i].udp_active) {
+                rx = g_sessions[i].udp_received;
+                /* Reset counters so the main test starts clean. */
+                g_sessions[i].udp_seq_max        = 0;
+                g_sessions[i].udp_received       = 0;
+                g_sessions[i].udp_out_of_order   = 0;
+                g_sessions[i].udp_jitter_ns      = 0.0;
+                g_sessions[i].udp_peak_jitter_ns = 0.0;
+                g_sessions[i].udp_last_rx_ns     = 0;
+                g_sessions[i].udp_last_tx_ns     = 0;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&g_sess_mtx);
+
+        char resp[64];
+        int rlen = snprintf(resp, sizeof(resp),
+                            "SPDCHK_UDP_CHECK %u\n", rx);
+        if (rlen > 0 && rlen < (int)sizeof(resp))
+            send(fd, resp, (size_t)rlen, MSG_NOSIGNAL);
+        log_debug("SERVER", "UDP preflight check for %s: rx=%u", addr_str, rx);
+        sock_close(fd);
+        pthread_mutex_lock(&g_conn_mtx);
+        g_conn_count--;
+        pthread_mutex_unlock(&g_conn_mtx);
+        return NULL;
+    }
+
+    /* -------------------------------------------------------------- */
     /* UDP done / report request — client sends                         */
     /*   "SPDCHK_UDP_DONE <packets_sent>\n"                            */
     /* Server replies:                                                  */

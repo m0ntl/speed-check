@@ -39,4 +39,12 @@ int run_udp_client(const char *target_ip, int port,
                    double target_bw_mbps, int pkt_size,
                    int duration_sec, struct udp_result *result);
 
+#ifdef TEST_MODE
+/*
+ * udp_preflight_query — visible only in test builds so unit tests can
+ * exercise the response-parsing logic in isolation.
+ */
+int udp_preflight_query(const char *ip, int port);
+#endif
+
 #endif /* UDP_H */
